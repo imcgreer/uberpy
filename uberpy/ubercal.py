@@ -87,7 +87,6 @@ def ubercal_solve(calset,**kwargs):
 	   given in Padmanabhan et al. (2008) eq. 14.
 	   Returns the updated parameters.
 	'''
-	#from scipy.sparse import hstack,eye,diags
 	minNobs = kwargs.get('minNobs',1)
 	bigmatrix = kwargs.get('bigmatrix',False)
 	#rmsFloor = kwargs.get('rmsFloor',0.02)
@@ -97,6 +96,7 @@ def ubercal_solve(calset,**kwargs):
 	if bigmatrix:
 		A = np.zeros((nobs,npar))
 		b = np.zeros(nobs)
+		cinv = np.zeros(nobs)
 		i1 = 0
 	else:
 		atcinvb = np.zeros(npar)
@@ -143,17 +143,18 @@ def ubercal_solve(calset,**kwargs):
 		# if requested, construct the large matrices instead
 		if bigmatrix:
 			i2 = i1 + nobs_i
-			b[i1:i2] = (m_mean - m_inst)*ivar_inst 
+			b[i1:i2] = m_inst - m_mean
 			for i in range(nobs_i):
 				A[i1+i,par_a_indx[i]] = 1
 				A[i1+i,par_k_indx[i]] = -x[i]
 				for j in range(nobs_i):
 					A[i1+i,par_a_indx[j]] -= w[j]
 					A[i1+i,par_k_indx[j]] += w[j]*x[j]
+			cinv[i1:i2] = ivar_inst
 			i1 += nobs_i
 			continue
 		# b column vector (eq. 13)
-		b = (m_mean - m_inst)*ivar_inst
+		b = (m_inst - m_mean)*ivar_inst
 		wb = np.sum(b)*w
 		# fill matrix by groups of a and k terms
 		for i,(ai,ki) in enumerate(zip(par_a_indx,par_k_indx)):
@@ -176,17 +177,9 @@ def ubercal_solve(calset,**kwargs):
 				atcinva[par_k_indx[i],par_a_indx[j]] -= wt[i,j]*x[i]
 				atcinva[par_a_indx[i],par_k_indx[j]] -= wt[i,j]*x[j]
 	if bigmatrix:
-		atcinvb = np.dot(A.T,b)
-		B = A.copy()
-		i1 = 0
-		for n,obj in enumerate(calset):
-			m_inst,ivar_inst = obj.get_instrumental_mags()
-			nobs_i = obj.get_numobs()
-			B[i1:i1+nobs_i] = ivar_inst[:,np.newaxis]*B[i1:i1+nobs_i]
-			i1 += nobs_i
-		atcinva = np.dot(A.T,B)
-		# could construct a sparse diagonal matrix for cinv and do it this way
-		#atcinva = np.dot(np.dot(A.T,np.diag(cinv)),A)
+		atcinvb = np.dot(A.T,cinv*b)
+		# should use scipy.sparse here but getting a warning
+		atcinva = np.dot(np.dot(A.T,np.diag(cinv)),A)
 	# Solve for p 
 	p, _, _, _ = np.linalg.lstsq(atcinva,atcinvb)
 	return p
