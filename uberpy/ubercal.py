@@ -19,15 +19,22 @@ class CalibrationObject(object):
 		   mags,errs: n-element vectors containing instrumental magnitudes
 		              and errors, measured in ADU
 		'''
-		mask = errs <= 0
-		self.mags = np.ma.masked_array(mags,mask)
-		self.ivars = np.ma.masked_array(np.clip(errs,1e-10,np.inf)**-2,mask)
+		#mask = errs <= 0
+		#self.mags = np.ma.masked_array(mags,mask)
+		#self.ivars = np.ma.masked_array(np.clip(errs,1e-10,np.inf)**-2,mask)
+		self.mags = mags
+		self.ivars = np.clip(errs,1e-10,np.inf)**-2
 		self.nobs = len(self.mags)
 		self.a_indices = None
 		self.k_indices = None
 		self.t_indices = None
 		self.x_indices = None
 		self.flat_indices = None
+		self.xpos = None
+		self.ypos = None
+	def set_xy(self,x,y):
+		self.xpos = x
+		self.ypos = y
 	def set_a_indices(self,a_indices):
 		self.a_indices = a_indices
 	def set_k_indices(self,k_indices):
@@ -36,6 +43,8 @@ class CalibrationObject(object):
 		self.t_indices = t_indices
 	def set_x_indices(self,x_indices):
 		self.x_indices = x_indices
+	def set_flat_indices(self,flat_indices):
+		self.flat_indices = flat_indices
 	def get_numobs(self):
 		return self.nobs
 	def get_instrumental_mags(self):
@@ -47,40 +56,65 @@ class CalibrationObject(object):
 class CalibrationObjectSet(object):
 	def __init__(self,aTerms,kTerms,tVals,airmasses,flatfields):
 		self.objs = []
-		self.aTerms = aTerms.copy()
-		self.kTerms = kTerms.copy()
+#		self.aTerms = aTerms.copy()
+#		self.kTerms = kTerms.copy()
 		self.tVals = tVals
 		self.airmasses = airmasses
 		self.flatfields = flatfields
-		self.na = self.aTerms.size
-		self.nk = self.kTerms.size
-		self.npar = self.na + self.nk
 		self.nobs = 0
+		self.params = {
+		     'a':{ 'fit':True,  'terms':aTerms, 'num':aTerms.size },
+		     'k':{ 'fit':True,  'terms':kTerms, 'num':kTerms.size },
+		  'dkdt':{ 'fit':False, 'terms':None,   'num':0 },
+		  'flat':{ 'fit':False, 'terms':None,   'num':0 },
+		}
+		self.npar = np.array([self.params[paramName]['num'] 
+		                        for paramName in ['a','k','dkdt','flat']
+		                          if self.params[paramName]['fit']])
 	def add_object(self,calobj):
 		self.objs.append(calobj)
 		self.nobs += calobj.get_numobs()
 	def num_params(self):
-		return self.npar
+		return np.sum(self.npar)
 	def num_objects(self):
 		return len(self.objs)
 	def num_observations(self):
 		return self.nobs
 	def get_aterms(self,a_indices):
-		return self.aTerms[a_indices]
+		return self.params['a']['terms'][a_indices]
 	def get_kterms(self,k_indices):
-		return self.kTerms[k_indices]
+		return self.params['k']['terms'][k_indices]
 	def get_obstimes(self,t_indices):
 		return self.tVals[t_indices]
 	def get_airmasses(self,x_indices):
 		return self.airmasses[x_indices]
-	def update_params(self,p):
+	def update_params(self,par):
 		i0 = 0
-		for nterms,terms in zip([self.na,self.nk],[self.aTerms,self.kTerms]):
-			terms[:] = p[i0:i0+nterms].reshape(terms.shape)
+		for p in ['a','k','dkdt','flat']:
+			nterms = self.params[p]['num']
+			if self.params[p]['fit']:
+				shape = self.params[p]['terms'].shape
+				self.params[p]['terms'] = par[i0:i0+nterms].reshape(shape)
 			i0 += nterms
 	def __iter__(self):
 		for obj in self.objs:
 			yield obj
+	def parameter_indices(self,paramName,indices):
+		if not self.params[paramName]['fit']:
+			raise ValueError
+		i0 = 0
+		for p in ['a','k','dkdt','flat']:
+			if paramName == p:
+				pshape = self.params[p]['terms'].shape
+				if len(pshape)==1:
+					par_ii = i0 + np.asarray(indices)
+				else:
+					par_ii = [i0 + np.ravel_multi_index(ii,pshape)
+					                for ii in indices]
+				break
+			else:
+				i0 += self.params[p]['num']
+		return par_ii
 
 def ubercal_solve(calset,**kwargs):
 	'''Find the best fit parameter values by solving the least squared problem
@@ -103,6 +137,7 @@ def ubercal_solve(calset,**kwargs):
 		atcinva = np.zeros((npar,npar))
 	# iterate over all objects (stars)
 	for n,obj in enumerate(calset):
+		print 'star #',n,' out of ',calset.num_objects()
 		# collect all observations of this object and the associated
 		# calibration terms
 		m_inst,ivar_inst = obj.get_instrumental_mags()
@@ -115,19 +150,8 @@ def ubercal_solve(calset,**kwargs):
 		#flatfield = calset.get_flatfields(flat_indices)
 		flatfield = 0 # placeholder
 		dt = 0 # placeholder
-		# translate indices from the term arrays (which may be 
-		# multidimensional) into indices in parameter array.
-		# ordering of parameter array is [a1..aN,k1..kN,(dkdt1..dkdtN)]
-		i0 = 0
-#		par_a_indx = [i0 + np.ravel_multi_index(ai,calset.aTerms.shape)
-#		                for ai in a_indices]
-		par_a_indx = i0 + a_indices # XXX for single dim
-		i0 += calset.na
-#		par_k_indx = [i0 + np.ravel_multi_index(ki,calset.kTerms.shape)
-#		                for ki in k_indices]
-		par_k_indx = i0 + k_indices # XXX for single dim
-		i0 += calset.nk
-		assert i0==npar
+		par_a_indx = calset.parameter_indices('a',a_indices)
+		par_k_indx = calset.parameter_indices('k',k_indices)
 		nobs_i = obj.get_numobs()
 		#
 		# construct << A^T * C^-1 * B >>
