@@ -2,6 +2,8 @@
 
 import numpy as np
 
+from scipy.sparse import diags
+
 class CalibrationObject(object):
 	def __init__(self,mags,errs):
 		'''CalibrationObject(mags,errs) 
@@ -123,11 +125,12 @@ def ubercal_solve(calset,**kwargs):
 	'''
 	minNobs = kwargs.get('minNobs',1)
 	bigmatrix = kwargs.get('bigmatrix',False)
+	fastbigmatrix = kwargs.get('fastbigmatrix',False)
 	#rmsFloor = kwargs.get('rmsFloor',0.02)
 	#
 	npar = calset.num_params()
 	nobs = calset.num_observations()
-	if bigmatrix:
+	if bigmatrix or fastbigmatrix:
 		A = np.zeros((nobs,npar))
 		b = np.zeros(nobs)
 		cinv = np.zeros(nobs)
@@ -137,7 +140,8 @@ def ubercal_solve(calset,**kwargs):
 		atcinva = np.zeros((npar,npar))
 	# iterate over all objects (stars)
 	for n,obj in enumerate(calset):
-		print 'star #',n,' out of ',calset.num_objects()
+		if ((n+1)%50)==0:
+			print 'star #',n+1,' out of ',calset.num_objects()
 		# collect all observations of this object and the associated
 		# calibration terms
 		m_inst,ivar_inst = obj.get_instrumental_mags()
@@ -165,16 +169,33 @@ def ubercal_solve(calset,**kwargs):
 		# inverse-variance-weighted mean instrumental magnitude
 		m_mean = np.sum(w*m_inst)
 		# if requested, construct the large matrices instead
-		if bigmatrix:
+		if fastbigmatrix:
 			i2 = i1 + nobs_i
 			b[i1:i2] = m_inst - m_mean
+			cinv[i1:i2] = ivar_inst
+			ii = np.arange(i1,i2)      # indexes into rows of A (observations)
+			iii = np.repeat(ii,nobs_i) # repeat for 2D calculation
+			jj = np.tile(ii-i1,nobs_i) # index for vectors
+			#
+			A[ii,par_a_indx] = 1
+			indx2d = ( iii, np.tile(par_a_indx,nobs_i) )
+			np.add.at(A,indx2d,-w[jj])
+			#
+			A[ii,par_k_indx] = -x
+			indx2d = ( iii, np.tile(par_k_indx,nobs_i) )
+			np.add.at(A,indx2d,(w*x)[jj])
+			i1 += nobs_i
+			continue
+		elif bigmatrix:
+			i2 = i1 + nobs_i
+			b[i1:i2] = m_inst - m_mean
+			cinv[i1:i2] = ivar_inst
 			for i in range(nobs_i):
 				A[i1+i,par_a_indx[i]] = 1
 				A[i1+i,par_k_indx[i]] = -x[i]
 				for j in range(nobs_i):
 					A[i1+i,par_a_indx[j]] -= w[j]
 					A[i1+i,par_k_indx[j]] += w[j]*x[j]
-			cinv[i1:i2] = ivar_inst
 			i1 += nobs_i
 			continue
 		# b column vector (eq. 13)
@@ -200,10 +221,12 @@ def ubercal_solve(calset,**kwargs):
 				atcinva[par_k_indx[i],par_k_indx[j]] += wt[i,j]*x[i]*x[j]
 				atcinva[par_k_indx[i],par_a_indx[j]] -= wt[i,j]*x[i]
 				atcinva[par_a_indx[i],par_k_indx[j]] -= wt[i,j]*x[j]
-	if bigmatrix:
+	if bigmatrix or fastbigmatrix:
 		atcinvb = np.dot(A.T,cinv*b)
 		# should use scipy.sparse here but getting a warning
-		atcinva = np.dot(np.dot(A.T,np.diag(cinv)),A)
+		#atcinva = np.dot(np.dot(A.T,np.diag(cinv)),A)
+		_A = np.dot(diags(cinv,0),A)
+		atcinva = np.dot(A.T,_A)
 	# Solve for p 
 	p, _, _, _ = np.linalg.lstsq(atcinva,atcinvb)
 	return p

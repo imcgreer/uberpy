@@ -7,6 +7,8 @@ from astropy.stats import sigma_clip
 from astropy.time import Time,TimeDelta
 import fitsio
 
+import matplotlib.pyplot as plt
+
 #from .ubercal import CalibrationObject,CalibrationObjectSet,ubercal_solve
 from ubercal import CalibrationObject,CalibrationObjectSet,ubercal_solve
 
@@ -202,6 +204,7 @@ def fiducial_model(frames,objs,verbose=True,**kwargs):
 	return rmcal
 
 def sim_fiducial_model(frames,objs,verbose=True,**kwargs):
+	np.random.seed(1)
 	nightlyLogs = boklog.load_Bok_logs() # just for numNights...
 	numCCDs = 4
 	numNights = len(nightlyLogs)
@@ -218,6 +221,7 @@ def sim_fiducial_model(frames,objs,verbose=True,**kwargs):
 	#mag_sim = 18. + np.random.random_sample(len(objs))
 	#k_true = 0.2 + 0*k_init
 	mag_sim = np.repeat(18.,len(objs))
+	err_val = 0.03
 	#
 	for i,(starNum,obj) in enumerate(objs.items()):
 		if (starNum % 5) != 0:
@@ -225,7 +229,8 @@ def sim_fiducial_model(frames,objs,verbose=True,**kwargs):
 		x = frames['airmass'][obj['frameIndex']]
 		mags = mag_sim[i] + a_true[obj['nightIndex'],obj['ccdNum']-1] \
 		          - k_true[obj['nightIndex']]*x
-		errs = np.repeat(0.03,len(mags))
+		errs = np.repeat(err_val,len(mags))
+		#mags[:] += np.random.normal(err_val,size=mags.shape)
 		calobj = CalibrationObject(mags,errs)
 		calobj.set_xy(obj['x'],obj['y'])
 		calobj.set_a_indices(np.vstack([obj['nightIndex'],
@@ -245,7 +250,34 @@ def sim_fiducial_model(frames,objs,verbose=True,**kwargs):
 	for iternum in range(niter):
 		pars = ubercal_solve(rmcal,**kwargs)
 		rmcal.update_params(pars)
-	framesPerNight = [np.sum(frames['nightIndex']==i) 
-	                    for i in range(numNights)]
-	return rmcal,a_true,k_true
+	framesPerNight = np.array([np.sum(frames['nightIndex']==i) 
+	                              for i in range(numNights)])
+	good = framesPerNight > 0
+	g=good
+	plt.figure(figsize=(10,5))
+	plt.subplot(121)
+	plt.scatter(a_true[g].flatten(),rmcal.params['a']['terms'][g].flatten())
+	plt.plot([-0.15,0.15],[-0.15,0.15],c='g')
+	plt.subplot(122)
+	plt.scatter(k_true[g].flatten(),rmcal.params['k']['terms'][g].flatten())
+	plt.plot([0,0.2],[0,0.2],c='g')
+	return rmcal,a_true,k_true,good
+
+import cProfile
+import pstats
+def prof():
+	frames = build_frame_list('g')
+	objs = load_cached_object_list('test.fits')
+	sim_fiducial_model(frames,objs)
+
+def dump(fn):
+	p = pstats.Stats(fn)
+	p.strip_dirs().sort_stats('cumulative').print_stats(50)
+
+if __name__=='__main__':
+	import sys
+	if len(sys.argv)==1:
+		cProfile.run('prof()','foo')
+	elif sys.argv[1]=='dump':
+		dump('foo')
 
