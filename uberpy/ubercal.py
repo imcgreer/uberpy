@@ -123,12 +123,11 @@ def ubercal_solve(calset,**kwargs):
 	'''
 	minNobs = kwargs.get('minNobs',1)
 	bigmatrix = kwargs.get('bigmatrix',False)
-	fastbigmatrix = kwargs.get('fastbigmatrix',False)
 	#rmsFloor = kwargs.get('rmsFloor',0.02)
 	#
 	npar = calset.num_params()
 	nobs = calset.num_observations()
-	if bigmatrix or fastbigmatrix:
+	if bigmatrix:
 		A = np.zeros((nobs,npar))
 		b = np.zeros(nobs)
 		cinv = np.zeros(nobs)
@@ -201,7 +200,7 @@ def ubercal_solve(calset,**kwargs):
 		np.add.at( atcinva, (ai,kj), -wt[ii,jj]*x[jj]       )
 		np.add.at( atcinva, (ki,aj), -wt[ii,jj]*x[ii]       )
 		np.add.at( atcinva, (ki,kj),  wt[ii,jj]*x[ii]*x[jj] )
-	if bigmatrix or fastbigmatrix:
+	if bigmatrix:
 		atcinvb = np.dot(A.T,cinv*b)
 		# should use scipy.sparse here but getting a warning
 		atcinva = np.dot(np.dot(A.T,np.diag(cinv)),A)
