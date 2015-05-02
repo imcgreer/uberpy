@@ -152,9 +152,14 @@ def ubercal_solve(calset,**kwargs):
 		#flatfield = calset.get_flatfields(flat_indices)
 		flatfield = 0 # placeholder
 		dt = 0 # placeholder
+		# construct indices
+		nobs_i = obj.get_numobs()
 		par_a_indx = calset.parameter_indices('a',a_indices)
 		par_k_indx = calset.parameter_indices('k',k_indices)
-		nobs_i = obj.get_numobs()
+		ii = np.repeat(np.arange(nobs_i),nobs_i)
+		jj = np.tile(np.arange(nobs_i),nobs_i)
+		ai,aj = par_a_indx[ii],par_a_indx[jj]
+		ki,kj = par_k_indx[ii],par_k_indx[jj]
 		#
 		# construct << A^T * C^-1 * B >>
 		#
@@ -167,33 +172,15 @@ def ubercal_solve(calset,**kwargs):
 		# inverse-variance-weighted mean instrumental magnitude
 		m_mean = np.sum(w*m_inst)
 		# if requested, construct the large matrices instead
-		if fastbigmatrix:
+		if bigmatrix:
 			i2 = i1 + nobs_i
+			_ii = np.arange(i1,i2)      # indexes into rows of A (observations)
 			b[i1:i2] = m_inst - m_mean
 			cinv[i1:i2] = ivar_inst
-			ii = np.arange(i1,i2)      # indexes into rows of A (observations)
-			iii = np.repeat(ii,nobs_i) # repeat for 2D calculation
-			jj = np.tile(ii-i1,nobs_i) # index for vectors
-			#
-			A[ii,par_a_indx] = 1
-			indx2d = ( iii, np.tile(par_a_indx,nobs_i) )
-			np.add.at(A,indx2d,-w[jj])
-			#
-			A[ii,par_k_indx] = -x
-			indx2d = ( iii, np.tile(par_k_indx,nobs_i) )
-			np.add.at(A,indx2d,(w*x)[jj])
-			i1 += nobs_i
-			continue
-		elif bigmatrix:
-			i2 = i1 + nobs_i
-			b[i1:i2] = m_inst - m_mean
-			cinv[i1:i2] = ivar_inst
-			for i in range(nobs_i):
-				A[i1+i,par_a_indx[i]] = 1
-				A[i1+i,par_k_indx[i]] = -x[i]
-				for j in range(nobs_i):
-					A[i1+i,par_a_indx[j]] -= w[j]
-					A[i1+i,par_k_indx[j]] += w[j]*x[j]
+			A[_ii,par_a_indx] = 1
+			A[_ii,par_k_indx] = -x
+			np.add.at( A[i1:i2], (ii,aj),    -w[jj] )
+			np.add.at( A[i1:i2], (ii,kj), (w*x)[jj] )
 			i1 += nobs_i
 			continue
 		# b column vector (eq. 13)
@@ -210,10 +197,6 @@ def ubercal_solve(calset,**kwargs):
 			a_sub[:,i] *= ivar_inst
 		wt = np.dot(at_sub,a_sub)
 		#
-		ii = np.repeat(np.arange(nobs_i),nobs_i)
-		jj = np.tile(np.arange(nobs_i),nobs_i)
-		ai,aj = par_a_indx[ii],par_a_indx[jj]
-		ki,kj = par_k_indx[ii],par_k_indx[jj]
 		np.add.at( atcinva, (ai,aj),  wt[ii,jj]             )
 		np.add.at( atcinva, (ai,kj), -wt[ii,jj]*x[jj]       )
 		np.add.at( atcinva, (ki,aj), -wt[ii,jj]*x[ii]       )
