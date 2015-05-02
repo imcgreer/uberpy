@@ -191,10 +191,7 @@ def ubercal_solve(calset,**kwargs):
 		# construct << A^T * C^-1 * A >>
 		#
 		at_sub = np.eye(nobs_i) - np.tile(w,(nobs_i,1))
-		a_sub = at_sub.transpose().copy()
-		for i in range(nobs_i):
-			a_sub[:,i] *= ivar_inst
-		wt = np.dot(at_sub,a_sub)
+		wt = np.dot(at_sub,np.transpose(ivar_inst*at_sub))
 		#
 		np.add.at( atcinva, (ai,aj),  wt[ii,jj]             )
 		np.add.at( atcinva, (ai,kj), -wt[ii,jj]*x[jj]       )
