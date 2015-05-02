@@ -2,8 +2,6 @@
 
 import numpy as np
 
-from scipy.sparse import diags
-
 class CalibrationObject(object):
 	def __init__(self,mags,errs):
 		'''CalibrationObject(mags,errs) 
@@ -116,7 +114,7 @@ class CalibrationObjectSet(object):
 				break
 			else:
 				i0 += self.params[p]['num']
-		return par_ii
+		return np.array(par_ii)
 
 def ubercal_solve(calset,**kwargs):
 	'''Find the best fit parameter values by solving the least squared problem
@@ -138,8 +136,6 @@ def ubercal_solve(calset,**kwargs):
 	else:
 		atcinvb = np.zeros(npar)
 		atcinva = np.zeros((npar,npar))
-		_atcinvb = np.zeros(npar)
-		_atcinva = np.zeros((npar,npar))
 	# iterate over all objects (stars)
 	for n,obj in enumerate(calset):
 		if ((n+1)%50)==0:
@@ -156,8 +152,8 @@ def ubercal_solve(calset,**kwargs):
 		#flatfield = calset.get_flatfields(flat_indices)
 		flatfield = 0 # placeholder
 		dt = 0 # placeholder
-		par_a_indx = np.array(calset.parameter_indices('a',a_indices))
-		par_k_indx = np.array(calset.parameter_indices('k',k_indices))
+		par_a_indx = calset.parameter_indices('a',a_indices)
+		par_k_indx = calset.parameter_indices('k',k_indices)
 		nobs_i = obj.get_numobs()
 		#
 		# construct << A^T * C^-1 * B >>
@@ -203,13 +199,8 @@ def ubercal_solve(calset,**kwargs):
 		# b column vector (eq. 13)
 		b = (m_inst - m_mean)*ivar_inst
 		wb = np.sum(b)*w
-		# fill matrix by groups of a and k terms
-#		for i,(ai,ki) in enumerate(zip(par_a_indx,par_k_indx)):
-#			atcinvb[ai] += b[i] - wb[i]
-#			atcinvb[ki] -= (b[i] - wb[i])*x[i]
-		np.add.at( _atcinvb, par_a_indx,   b-wb   )
-		np.add.at( _atcinvb, par_k_indx, -(b-wb)*x)
-#		assert np.allclose(_atcinvb,atcinvb)
+		np.add.at( atcinvb, par_a_indx,   b-wb    )
+		np.add.at( atcinvb, par_k_indx, -(b-wb)*x )
 		#
 		# construct << A^T * C^-1 * A >>
 		#
@@ -218,32 +209,19 @@ def ubercal_solve(calset,**kwargs):
 		for i in range(nobs_i):
 			a_sub[:,i] *= ivar_inst
 		wt = np.dot(at_sub,a_sub)
-#		for i in range(nobs_i):
-#			for j in range(nobs_i):
-#				atcinva[par_a_indx[i],par_a_indx[j]] += wt[i,j]
+		#
 		ii = np.repeat(np.arange(nobs_i),nobs_i)
 		jj = np.tile(np.arange(nobs_i),nobs_i)
 		ai,aj = par_a_indx[ii],par_a_indx[jj]
 		ki,kj = par_k_indx[ii],par_k_indx[jj]
-		np.add.at(_atcinva, (ai,aj), wt[ii,jj])
-#		assert np.allclose(_atcinva,atcinva)
-#		for i in range(nobs_i):
-#			for j in range(nobs_i):
-#				atcinva[par_k_indx[i],par_k_indx[j]] += wt[i,j]*x[i]*x[j]
-#				atcinva[par_k_indx[i],par_a_indx[j]] -= wt[i,j]*x[i]
-#				atcinva[par_a_indx[i],par_k_indx[j]] -= wt[i,j]*x[j]
-		np.add.at(_atcinva, (ki,kj),  wt[ii,jj]*x[ii]*x[jj])
-		np.add.at(_atcinva, (ki,aj), -wt[ii,jj]*x[ii])
-		np.add.at(_atcinva, (ai,kj), -wt[ii,jj]*x[jj])
-#		assert np.allclose(_atcinva,atcinva)
-	atcinva = _atcinva
-	atcinvb = _atcinvb
+		np.add.at( atcinva, (ai,aj),  wt[ii,jj]             )
+		np.add.at( atcinva, (ai,kj), -wt[ii,jj]*x[jj]       )
+		np.add.at( atcinva, (ki,aj), -wt[ii,jj]*x[ii]       )
+		np.add.at( atcinva, (ki,kj),  wt[ii,jj]*x[ii]*x[jj] )
 	if bigmatrix or fastbigmatrix:
 		atcinvb = np.dot(A.T,cinv*b)
 		# should use scipy.sparse here but getting a warning
 		atcinva = np.dot(np.dot(A.T,np.diag(cinv)),A)
-		#_A = np.dot(diags(cinv,0),A)
-		#atcinva = np.dot(A.T,_A)
 	# Solve for p 
 	p, _, _, _ = np.linalg.lstsq(atcinva,atcinvb)
 	return p
