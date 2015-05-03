@@ -12,8 +12,6 @@ import matplotlib.pyplot as plt
 #from .ubercal import CalibrationObject,CalibrationObjectSet,ubercal_solve
 from ubercal import CalibrationObject,CalibrationObjectSet,ubercal_solve
 
-import boklog
-
 nX,nY = 4096,4032
 nX2 = nX//2
 nY2 = nY//2
@@ -59,6 +57,7 @@ def build_frame_list(filt,nightlyLogs=None):
          nightIndex            0-indexed from the list of observing nights
 	     nightFrameNum         frame number from observing logs
 	'''
+	import boklog
 	refTimeUT = '07:00:00.0' # 7h UT = midnight MST
 	if nightlyLogs is None:
 		nightlyLogs = boklog.load_Bok_logs()
@@ -82,6 +81,8 @@ def build_frame_list(filt,nightlyLogs=None):
 	return frameList
 
 def collect_data(filt,catpfx='sdssbright'):
+	import boklog
+	import bokcat
 	photdir = os.path.join(os.environ['BOK90PRIMEOUTDIR'],'catalogs_v2')
 	aperNum = -1
 	mag0 = 25.0
@@ -90,6 +91,7 @@ def collect_data(filt,catpfx='sdssbright'):
 	nightlyLogs = boklog.load_Bok_logs()
 	frameList = build_frame_list(filt,nightlyLogs)
 	objectList = defaultdict(list)
+	refcat = bokcat.load_targets('SDSSstars')
 	for night,utd in enumerate(sorted(nightlyLogs.keys())):
 		try:
 			catfn = '.'.join([catpfx,utd,filt,'cat','fits'])
@@ -133,10 +135,10 @@ def collect_data(filt,catpfx='sdssbright'):
 			          2*(data['y'][good]//nY2).astype(np.int)
 			nightIndex = frameList['nightIndex'][jj]
 			runIndex = runarr[:len(good)]
-# XXX should store catalog mags (although they will have to be repeated
+			refMag = np.repeat(refcat[filt][starNum],len(good))
 			objectList[starNum].append((mags,errs,ccdNums,ampNums,
 			                            data['x'][good],data['y'][good],
-			                            runIndex,nightIndex,jj))
+			                            runIndex,nightIndex,jj,refMag))
 	for starNum in objectList:
 		arr = np.hstack(objectList[starNum])
 		objectList[starNum] = np.core.records.fromarrays(arr,
@@ -144,17 +146,15 @@ def collect_data(filt,catpfx='sdssbright'):
 		                               ('ccdNum','i4'),('ampNum','i4'),
 		                               ('x','f4'),('y','f4'),
 		                               ('runIndex','i4'),('nightIndex','i4'),
-	                                   ('frameIndex','i4')])
+	                                   ('frameIndex','i4'),('refMag','f4')])
 	return frameList,objectList
 
-# XXX need to cache framelist as well
-def cache_object_list(objectList,fileName):
+def cache_bok_data(frameList,objectList,fileName):
 	fits = fitsio.FITS(fileName,'rw')
 	indx = np.empty(len(objectList),
 	                dtype=[('starNum','i4'),('i1','i4'),('i2','i4')])
 	i1 = 0
 	for i,starNum in enumerate(objectList):
-		print 'star ',i,' out of ',len(objectList)
 		if i==0:
 			fits.write(objectList[starNum])
 		else:
@@ -164,16 +164,18 @@ def cache_object_list(objectList,fileName):
 		indx['i2'][i] = i1 + len(objectList[starNum])
 		i1 += len(objectList[starNum])
 	fits.write(indx)
+	fits.write(frameList)
 	fits.close()
 
-def load_cached_object_list(fileName):
+def load_cached_bok_data(fileName):
 	fits = fitsio.FITS(fileName)
 	data = fits[1].read()
 	indexes = fits[2].read()
+	frameList = fits[3].read()
 	objectList = {}
 	for starNum,i1,i2 in indexes:
 		objectList[starNum] = data[i1:i2]
-	return objectList
+	return frameList,objectList
 
 def sim_init(a_init,k_init,objs):
 	np.random.seed(1)
@@ -210,14 +212,13 @@ def sim_finish(rmcal,simdat):
 	plt.plot([0,0.2],[0,0.2],c='g')
 
 def fiducial_model(frames,objs,verbose=True,dosim=False,niter=1,**kwargs):
-	nightlyLogs = boklog.load_Bok_logs() # just for numNights...
 	numCCDs = 4
-	numNights = len(nightlyLogs)
 	numFrames = len(frames)
-	# initial is list of non-photometric nights
+	# identify nights to process
+	bok_nights = np.array([utd for run in bok_runs for utd in run])
+	numNights = len(bok_nights)
 	framesPerNight = np.array([np.sum(frames['nightIndex']==i) 
 	                              for i in range(numNights)])
-	bok_nights = np.array([utd for run in bok_runs for utd in run])
 	bad_nights = np.where( np.in1d(bok_nights,bad_night_list) | 
 	                       (framesPerNight==0) )[0]
 	# initialize the a-term array to zeros, masking non-photometric nights
@@ -262,7 +263,8 @@ def fiducial_model(frames,objs,verbose=True,dosim=False,niter=1,**kwargs):
 	for iternum in range(niter):
 		pars = ubercal_solve(rmcal,**kwargs)
 		rmcal.update_params(pars)
-		sim_finish(rmcal,simdat)
+		if dosim:
+			sim_finish(rmcal,simdat)
 	if dosim:
 		return rmcal,simdat
 	return rmcal
