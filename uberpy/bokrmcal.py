@@ -35,11 +35,15 @@ bok_runs = [
   ('20140512', '20140513', '20140514', '20140515', '20140516', 
    '20140517', '20140518',),
   ('20140609', '20140610', '20140611', '20140612', '20140613',),
-  ('20140629', '20140630', '20140701', '20140702', '20140703', 
-   '20140705',),
-  ('20140710', '20140711', '20140713', '20140716', '20140717', 
-   '20140718',),
+  ('20140629', '20140630', '20140701', '20140702', '20140703',),
+#   '20140705',), # no observations, doesn't have a log
+  ('20140710', '20140711', '20140713', 
+#   '20140716', # no observations, doesn't have a log
+   '20140717', '20140718',),
 ]
+
+# exclude clearly non-photometric nights
+bad_night_list = ['20131222',]
 
 def bok_run_index():
 	return {utd:run for run,utds in enumerate(bok_runs) for utd in utds}
@@ -55,6 +59,7 @@ def build_frame_list(filt,nightlyLogs=None):
          nightIndex            0-indexed from the list of observing nights
 	     nightFrameNum         frame number from observing logs
 	'''
+	refTimeUT = '07:00:00.0' # 7h UT = midnight MST
 	if nightlyLogs is None:
 		nightlyLogs = boklog.load_Bok_logs()
 	frameList = []
@@ -62,13 +67,17 @@ def build_frame_list(filt,nightlyLogs=None):
 		frames = nightlyLogs[utd]
 		ii = np.where((frames['filter']==filt) &
 		              (frames['imType']=='object'))[0]
-		mjds = [get_mjd(utd,frames['utStart'][i]) for i in ii]
+		mjds = np.array([get_mjd(utd,frames['utStart'][i]) for i in ii])
 		epochIndex = np.repeat(night,len(ii))
-		frameList.append((mjds,frames['expTime'][ii],frames['airmass'][ii],
+		refTime = get_mjd(utd,refTimeUT)
+		dt = 24*(mjds-refTime)
+		frameList.append((mjds,dt,
+		                  frames['expTime'][ii],frames['airmass'][ii],
 		                  epochIndex,ii))
 	frameList = np.hstack(frameList)
 	frameList = np.core.records.fromarrays(frameList,
-	                     dtype=[('mjd','f8'),('expTime','f4'),('airmass','f4'),
+	                     dtype=[('mjd','f8'),('dt','f4'),
+	                            ('expTime','f4'),('airmass','f4'),
 	                            ('nightIndex','i4'),('nightFrameNum','i4')])
 	return frameList
 
@@ -164,77 +173,76 @@ def load_cached_object_list(fileName):
 		objectList[starNum] = data[i1:i2]
 	return objectList
 
-# frames = bokrmcal.build_frame_list('g')
-# objs = bokrmcal.load_cached_object_list('test.fits')
-
-def fiducial_model(frames,objs,verbose=True,**kwargs):
-	nightlyLogs = boklog.load_Bok_logs() # just for numNights...
-	numCCDs = 4
-	numNights = len(nightlyLogs)
-	numFrames = len(frames)
-	a_init = np.zeros((numNights,numCCDs))
-	k_init = np.zeros(numNights)
-	flatfield_init = np.zeros((numCCDs,nY,nX))
-	dt = np.zeros(numFrames) # for now
-	rmcal = CalibrationObjectSet(a_init,k_init,dt,
-	                             frames['airmass'],flatfield_init)
-	#
-	for starNum,obj in objs.items():
-		if (starNum % 5) != 0:
-			continue
-		calobj = CalibrationObject(obj['magADU'],obj['errADU'])
-		calobj.set_xy(obj['x'],obj['y'])
-		calobj.set_a_indices(np.vstack([obj['nightIndex'],
-		                                obj['ccdNum']-1]).transpose())
-		calobj.set_k_indices(obj['nightIndex'])
-		calobj.set_flat_indices(obj['ccdNum'])
-		calobj.set_x_indices(obj['nightIndex'])
-		calobj.set_t_indices(obj['frameIndex'])
-		rmcal.add_object(calobj)
-	if verbose:
-		print 'number nights: ',numNights
-		print 'number frames: ',numFrames
-		print 'number objects: ',rmcal.num_objects()
-		print 'number observations: ',rmcal.num_observations()
-		print 'number parameters: ',rmcal.num_params()
-	niter = 1
-	for iternum in range(niter):
-		pars = ubercal_solve(rmcal,**kwargs)
-		rmcal.update_params(pars)
-	return rmcal
-
-def sim_fiducial_model(frames,objs,verbose=True,**kwargs):
+def sim_init(a_init,k_init,objs):
 	np.random.seed(1)
+	simdat = {}
+	simdat['a_true'] = 0.15 - 0.3*np.random.random_sample(a_init.shape)
+	simdat['k_true'] = 0.2*np.random.random_sample(k_init.shape)
+	#simdat['mag_sim'] = 18. + np.random.random_sample(len(objs))
+	#simdat['k_true'] = 0.2 + 0*k_init
+	simdat['mag'] = np.repeat(18.,len(objs))
+	simdat['err'] = 0.03
+	return simdat
+
+def sim_initobject(i,obj,frames,simdat):
+	x = frames['airmass'][obj['frameIndex']]
+	mags = simdat['mag'][i] \
+	        + simdat['a_true'][obj['nightIndex'],obj['ccdNum']-1] \
+	          - simdat['k_true'][obj['nightIndex']]*x
+	errs = np.repeat(simdat['err'],len(mags))
+	#mags[:] += np.random.normal(simdat['err'],size=mags.shape)
+	return CalibrationObject(mags,errs)
+
+def sim_finish(rmcal,simdat):
+	plt.figure(figsize=(10,5))
+	plt.subplot(121)
+	g = np.where(~rmcal.params['a']['terms'].mask)
+	plt.scatter(simdat['a_true'][g].flatten(),
+	            rmcal.params['a']['terms'][g].flatten())
+	plt.plot([-0.15,0.15],[-0.15,0.15],c='g')
+	plt.subplot(122)
+	g = np.where(~rmcal.params['k']['terms'].mask)
+	plt.scatter(simdat['k_true'][g].flatten(),
+	            rmcal.params['k']['terms'][g].flatten())
+	plt.plot([0,0.2],[0,0.2],c='g')
+	return rmcal,simdat
+
+def fiducial_model(frames,objs,verbose=True,dosim=False,**kwargs):
 	nightlyLogs = boklog.load_Bok_logs() # just for numNights...
 	numCCDs = 4
 	numNights = len(nightlyLogs)
 	numFrames = len(frames)
-	a_init = np.zeros((numNights,numCCDs))
-	k_init = np.zeros(numNights)
+	# initial is list of non-photometric nights
+	framesPerNight = np.array([np.sum(frames['nightIndex']==i) 
+	                              for i in range(numNights)])
+	bok_nights = np.array([utd for run in bok_runs for utd in run])
+	bad_nights = np.where( np.in1d(bok_nights,bad_night_list) | 
+	                       (framesPerNight==0) )[0]
+	# initialize the a-term array to zeros, masking non-photometric nights
+	a_init = np.ma.array(np.zeros((numNights,numCCDs)),mask=False)
+	a_init[bad_nights] = np.ma.masked
+	# initialize the k-term array to zeros, masking non-photometric nights
+	k_init = np.ma.array(np.zeros(numNights),mask=False)
+	k_init[bad_nights] = np.ma.masked
+	# initialize the flat field arrays to zeros, one per CCD
 	flatfield_init = np.zeros((numCCDs,nY,nX))
-	dt = np.zeros(numFrames) # for now
-	rmcal = CalibrationObjectSet(a_init,k_init,dt,
+	# construct the container for the global ubercal parameters
+	rmcal = CalibrationObjectSet(a_init,k_init,frames['dt'],
 	                             frames['airmass'],flatfield_init)
 	#
-	a_true = 0.15 - 0.3*np.random.random_sample(a_init.shape)
-	k_true = 0.2*np.random.random_sample(k_init.shape)
-	#mag_sim = 18. + np.random.random_sample(len(objs))
-	#k_true = 0.2 + 0*k_init
-	mag_sim = np.repeat(18.,len(objs))
-	err_val = 0.03
-	#
+	if dosim:
+		simdat = sim_init(a_init,k_init,objs)
+	# loop over individual stars and set their particulars for each 
+	# observation, then add them to the calibration set
 	for i,(starNum,obj) in enumerate(objs.items()):
-		if (starNum % 5) != 0:
+		if (starNum % 10) != 0:
 			continue
-		x = frames['airmass'][obj['frameIndex']]
-		mags = mag_sim[i] + a_true[obj['nightIndex'],obj['ccdNum']-1] \
-		          - k_true[obj['nightIndex']]*x
-		errs = np.repeat(err_val,len(mags))
-		#mags[:] += np.random.normal(err_val,size=mags.shape)
-		calobj = CalibrationObject(mags,errs)
+		if dosim:
+			calobj = sim_initobject(i,obj,frames,simdat)
+		else:
+			calobj = CalibrationObject(obj['magADU'],obj['errADU'])
 		calobj.set_xy(obj['x'],obj['y'])
-		calobj.set_a_indices(np.vstack([obj['nightIndex'],
-		                                obj['ccdNum']-1]).transpose())
+		calobj.set_a_indices((obj['nightIndex'],obj['ccdNum']-1))
 		calobj.set_k_indices(obj['nightIndex'])
 		calobj.set_flat_indices(obj['ccdNum'])
 		calobj.set_x_indices(obj['frameIndex'])
@@ -246,38 +254,15 @@ def sim_fiducial_model(frames,objs,verbose=True,**kwargs):
 		print 'number objects: ',rmcal.num_objects()
 		print 'number observations: ',rmcal.num_observations()
 		print 'number parameters: ',rmcal.num_params()
+	# iteratively solve for the calibration parameters
 	niter = 1
 	for iternum in range(niter):
 		pars = ubercal_solve(rmcal,**kwargs)
 		rmcal.update_params(pars)
-	framesPerNight = np.array([np.sum(frames['nightIndex']==i) 
-	                              for i in range(numNights)])
-	good = framesPerNight > 0
-	g=good
-	plt.figure(figsize=(10,5))
-	plt.subplot(121)
-	plt.scatter(a_true[g].flatten(),rmcal.params['a']['terms'][g].flatten())
-	plt.plot([-0.15,0.15],[-0.15,0.15],c='g')
-	plt.subplot(122)
-	plt.scatter(k_true[g].flatten(),rmcal.params['k']['terms'][g].flatten())
-	plt.plot([0,0.2],[0,0.2],c='g')
-	return rmcal,a_true,k_true,good
+	if dosim:
+		return sim_finish(rmcal,simdat)
+	return rmcal
 
-import cProfile
-import pstats
-def prof():
-	frames = build_frame_list('g')
-	objs = load_cached_object_list('test.fits')
-	sim_fiducial_model(frames,objs)
-
-def dump(fn):
-	p = pstats.Stats(fn)
-	p.strip_dirs().sort_stats('cumulative').print_stats(50)
-
-if __name__=='__main__':
-	import sys
-	if len(sys.argv)==1:
-		cProfile.run('prof()','foo')
-	elif sys.argv[1]=='dump':
-		dump('foo')
+# frames = bokrmcal.build_frame_list('g')
+# objs = bokrmcal.load_cached_object_list('test.fits')
 

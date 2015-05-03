@@ -3,7 +3,7 @@
 import numpy as np
 
 class CalibrationObject(object):
-	def __init__(self,mags,errs):
+	def __init__(self,mags,errs,errMin=0.02):
 		'''CalibrationObject(mags,errs) 
 		    An object (star or galaxy) with multiple observations that can be
 		    used for relative photometric calibration. The object is defined
@@ -19,11 +19,9 @@ class CalibrationObject(object):
 		   mags,errs: n-element vectors containing instrumental magnitudes
 		              and errors, measured in ADU
 		'''
-		#mask = errs <= 0
-		#self.mags = np.ma.masked_array(mags,mask)
-		#self.ivars = np.ma.masked_array(np.clip(errs,1e-10,np.inf)**-2,mask)
-		self.mags = mags
-		self.ivars = np.clip(errs,1e-10,np.inf)**-2
+		mask = errs <= 0
+		self.mags = np.ma.masked_array(mags,mask)
+		self.ivars = np.ma.masked_array(np.clip(errs,errMin,np.inf)**-2,mask)
 		self.nobs = len(self.mags)
 		self.a_indices = None
 		self.k_indices = None
@@ -56,8 +54,6 @@ class CalibrationObject(object):
 class CalibrationObjectSet(object):
 	def __init__(self,aTerms,kTerms,tVals,airmasses,flatfields):
 		self.objs = []
-#		self.aTerms = aTerms.copy()
-#		self.kTerms = kTerms.copy()
 		self.tVals = tVals
 		self.airmasses = airmasses
 		self.flatfields = flatfields
@@ -80,10 +76,8 @@ class CalibrationObjectSet(object):
 		return len(self.objs)
 	def num_observations(self):
 		return self.nobs
-	def get_aterms(self,a_indices):
-		return self.params['a']['terms'][a_indices]
-	def get_kterms(self,k_indices):
-		return self.params['k']['terms'][k_indices]
+	def get_terms(self,p,indices):
+		return self.params[p]['terms'][indices]
 	def get_obstimes(self,t_indices):
 		return self.tVals[t_indices]
 	def get_airmasses(self,x_indices):
@@ -94,7 +88,7 @@ class CalibrationObjectSet(object):
 			nterms = self.params[p]['num']
 			if self.params[p]['fit']:
 				shape = self.params[p]['terms'].shape
-				self.params[p]['terms'] = par[i0:i0+nterms].reshape(shape)
+				self.params[p]['terms'][:] = par[i0:i0+nterms].reshape(shape)
 			i0 += nterms
 	def __iter__(self):
 		for obj in self.objs:
@@ -109,8 +103,7 @@ class CalibrationObjectSet(object):
 				if len(pshape)==1:
 					par_ii = i0 + np.asarray(indices)
 				else:
-					par_ii = [i0 + np.ravel_multi_index(ii,pshape)
-					                for ii in indices]
+					par_ii = i0 + np.ravel_multi_index(indices,pshape)
 				break
 			else:
 				i0 += self.params[p]['num']
@@ -144,14 +137,14 @@ def ubercal_solve(calset,**kwargs):
 		m_inst,ivar_inst = obj.get_instrumental_mags()
 		a_indices,k_indices,t_indices,x_indices,flat_indices = \
 		                                    obj.get_term_indices()
-		a = calset.get_aterms(a_indices)
-		k = calset.get_kterms(k_indices)
-		dk_dt = 0 # placeholder
+		a = calset.get_terms('a',a_indices)
+		k = calset.get_terms('k',k_indices)
 		x = calset.get_airmasses(x_indices)
+		dk_dt = 0 # placeholder
 		#flatfield = calset.get_flatfields(flat_indices)
 		flatfield = 0 # placeholder
 		dt = 0 # placeholder
-		# construct indices
+		# construct indices into the parameter axis
 		nobs_i = obj.get_numobs()
 		par_a_indx = calset.parameter_indices('a',a_indices)
 		par_k_indx = calset.parameter_indices('k',k_indices)
@@ -164,8 +157,9 @@ def ubercal_solve(calset,**kwargs):
 		#
 		# update instrumental magnitude based on current values for fixed
 		# parameters and for for objects with poorly defined free parameters
-		# XXX currently skipped
-		#m = m_inst + a - (k + dk_dt*dt)*x + flatfield
+		a_bad = np.ma.masked_array(a.data,~a.mask).filled(0)
+		k_bad = np.ma.masked_array(k.data,~k.mask).filled(0)
+		m_inst[:] += a_bad - (k_bad + dk_dt*dt)*x + flatfield
 		# normalized inverse variance weights
 		w = ivar_inst / np.sum(ivar_inst)
 		# inverse-variance-weighted mean instrumental magnitude
