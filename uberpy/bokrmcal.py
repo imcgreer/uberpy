@@ -133,6 +133,7 @@ def collect_data(filt,catpfx='sdssbright'):
 			          2*(data['y'][good]//nY2).astype(np.int)
 			nightIndex = frameList['nightIndex'][jj]
 			runIndex = runarr[:len(good)]
+# XXX should store catalog mags (although they will have to be repeated
 			objectList[starNum].append((mags,errs,ccdNums,ampNums,
 			                            data['x'][good],data['y'][good],
 			                            runIndex,nightIndex,jj))
@@ -146,6 +147,7 @@ def collect_data(filt,catpfx='sdssbright'):
 	                                   ('frameIndex','i4')])
 	return frameList,objectList
 
+# XXX need to cache framelist as well
 def cache_object_list(objectList,fileName):
 	fits = fitsio.FITS(fileName,'rw')
 	indx = np.empty(len(objectList),
@@ -180,6 +182,7 @@ def sim_init(a_init,k_init,objs):
 	simdat['k_true'] = 0.2*np.random.random_sample(k_init.shape)
 	#simdat['mag_sim'] = 18. + np.random.random_sample(len(objs))
 	#simdat['k_true'] = 0.2 + 0*k_init
+	# XXX should have a mode of using the catalog mags and a median error
 	simdat['mag'] = np.repeat(18.,len(objs))
 	simdat['err'] = 0.03
 	return simdat
@@ -190,7 +193,7 @@ def sim_initobject(i,obj,frames,simdat):
 	        + simdat['a_true'][obj['nightIndex'],obj['ccdNum']-1] \
 	          - simdat['k_true'][obj['nightIndex']]*x
 	errs = np.repeat(simdat['err'],len(mags))
-	#mags[:] += np.random.normal(simdat['err'],size=mags.shape)
+	mags[:] += np.random.normal(scale=simdat['err'],size=mags.shape)
 	return CalibrationObject(mags,errs)
 
 def sim_finish(rmcal,simdat):
@@ -205,9 +208,8 @@ def sim_finish(rmcal,simdat):
 	plt.scatter(simdat['k_true'][g].flatten(),
 	            rmcal.params['k']['terms'][g].flatten())
 	plt.plot([0,0.2],[0,0.2],c='g')
-	return rmcal,simdat
 
-def fiducial_model(frames,objs,verbose=True,dosim=False,**kwargs):
+def fiducial_model(frames,objs,verbose=True,dosim=False,niter=1,**kwargs):
 	nightlyLogs = boklog.load_Bok_logs() # just for numNights...
 	numCCDs = 4
 	numNights = len(nightlyLogs)
@@ -249,18 +251,20 @@ def fiducial_model(frames,objs,verbose=True,dosim=False,**kwargs):
 		calobj.set_t_indices(obj['frameIndex'])
 		rmcal.add_object(calobj)
 	if verbose:
-		print 'number nights: ',numNights
+		print 'number nights: ',np.sum(framesPerNight>0)
+		print 'number good nights: ', \
+		          np.sum(np.any(~rmcal.params['a']['terms'].mask,axis=1))
 		print 'number frames: ',numFrames
 		print 'number objects: ',rmcal.num_objects()
 		print 'number observations: ',rmcal.num_observations()
 		print 'number parameters: ',rmcal.num_params()
 	# iteratively solve for the calibration parameters
-	niter = 1
 	for iternum in range(niter):
 		pars = ubercal_solve(rmcal,**kwargs)
 		rmcal.update_params(pars)
+		sim_finish(rmcal,simdat)
 	if dosim:
-		return sim_finish(rmcal,simdat)
+		return rmcal,simdat
 	return rmcal
 
 # frames = bokrmcal.build_frame_list('g')

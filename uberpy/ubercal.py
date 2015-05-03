@@ -88,7 +88,8 @@ class CalibrationObjectSet(object):
 			nterms = self.params[p]['num']
 			if self.params[p]['fit']:
 				shape = self.params[p]['terms'].shape
-				self.params[p]['terms'][:] = par[i0:i0+nterms].reshape(shape)
+				self.params[p]['terms'].data[:] = \
+				                         par[i0:i0+nterms].reshape(shape)
 			i0 += nterms
 	def __iter__(self):
 		for obj in self.objs:
