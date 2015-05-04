@@ -52,7 +52,7 @@ def get_mjd(utDate,utTime):
 
 def build_frame_list(filt,nightlyLogs=None):
 	'''Collapse the nightly observing logs into a master frame list containing
-	   the relevant infor for each observation, namely:
+	   the relevant info for each observation, namely:
 	     mjd,expTime,airmass   observing parameters
          nightIndex            0-indexed from the list of observing nights
 	     nightFrameNum         frame number from observing logs
@@ -177,16 +177,23 @@ def load_cached_bok_data(fileName):
 		objectList[starNum] = data[i1:i2]
 	return frameList,objectList
 
-def sim_init(a_init,k_init,objs):
+def sim_init(a_init,k_init,objs,**kwargs):
+	a_range = kwargs.get('sim_a_range',0.3)
+	k_range = kwargs.get('sim_k_range',0.2)
+	fixed_mag = kwargs.get('sim_fixed_mag',18.)
+	fixed_err = kwargs.get('sim_fixed_err',0.03)
 	np.random.seed(1)
 	simdat = {}
-	simdat['a_true'] = 0.15 - 0.3*np.random.random_sample(a_init.shape)
-	simdat['k_true'] = 0.2*np.random.random_sample(k_init.shape)
-	#simdat['mag_sim'] = 18. + np.random.random_sample(len(objs))
-	#simdat['k_true'] = 0.2 + 0*k_init
-	# XXX should have a mode of using the catalog mags and a median error
-	simdat['mag'] = np.repeat(18.,len(objs))
-	simdat['err'] = 0.03
+	simdat['a_true'] = a_range*(0.5-np.random.random_sample(a_init.shape))
+	simdat['k_true'] = k_range*np.random.random_sample(k_init.shape)
+	if kwargs.get('sim_userefmag',False):
+		simdat['mag'] = np.array([objs[i]['refMag'][0] for i in objs])
+	else:
+		simdat['mag'] = np.repeat(fixed_mag,len(objs))
+	if kwargs.get('sim_userealerrors',False):
+		simdat['err'] = np.array([np.median(objs[i]['errADU']) for i in objs])
+	else:
+		simdat['err'] = np.repeat(fixed_err,len(objs))
 	return simdat
 
 def sim_initobject(i,obj,frames,simdat):
@@ -194,8 +201,8 @@ def sim_initobject(i,obj,frames,simdat):
 	mags = simdat['mag'][i] \
 	        + simdat['a_true'][obj['nightIndex'],obj['ccdNum']-1] \
 	          - simdat['k_true'][obj['nightIndex']]*x
-	errs = np.repeat(simdat['err'],len(mags))
-	mags[:] += np.random.normal(scale=simdat['err'],size=mags.shape)
+	errs = np.repeat(simdat['err'][i],len(mags))
+	mags[:] += errs*np.random.normal(size=mags.shape)
 	return CalibrationObject(mags,errs)
 
 def sim_finish(rmcal,simdat):
@@ -234,7 +241,7 @@ def fiducial_model(frames,objs,verbose=True,dosim=False,niter=1,**kwargs):
 	                             frames['airmass'],flatfield_init)
 	#
 	if dosim:
-		simdat = sim_init(a_init,k_init,objs)
+		simdat = sim_init(a_init,k_init,objs,**kwargs)
 	# loop over individual stars and set their particulars for each 
 	# observation, then add them to the calibration set
 	for i,(starNum,obj) in enumerate(objs.items()):
@@ -247,7 +254,7 @@ def fiducial_model(frames,objs,verbose=True,dosim=False,niter=1,**kwargs):
 		calobj.set_xy(obj['x'],obj['y'])
 		calobj.set_a_indices((obj['nightIndex'],obj['ccdNum']-1))
 		calobj.set_k_indices(obj['nightIndex'])
-		calobj.set_flat_indices(obj['ccdNum'])
+		calobj.set_flat_indices(obj['ccdNum']-1)
 		calobj.set_x_indices(obj['frameIndex'])
 		calobj.set_t_indices(obj['frameIndex'])
 		rmcal.add_object(calobj)
