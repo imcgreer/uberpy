@@ -210,13 +210,13 @@ def sim_finish(rmcal,simdat):
 	plt.subplot(121)
 	g = np.where(~rmcal.params['a']['terms'].mask)
 	plt.scatter(simdat['a_true'][g].flatten(),
-	            rmcal.params['a']['terms'][g].flatten())
-	plt.plot([-0.15,0.15],[-0.15,0.15],c='g')
+	            (rmcal.params['a']['terms']-simdat['a_true'])[g].flatten())
+	#plt.plot([-0.15,0.15],[-0.15,0.15],c='g')
 	plt.subplot(122)
 	g = np.where(~rmcal.params['k']['terms'].mask)
 	plt.scatter(simdat['k_true'][g].flatten(),
-	            rmcal.params['k']['terms'][g].flatten())
-	plt.plot([0,0.2],[0,0.2],c='g')
+	            (rmcal.params['k']['terms']-simdat['k_true'])[g].flatten())
+	#plt.plot([0,0.2],[0,0.2],c='g')
 
 def fiducial_model(frames,objs,verbose=True,dosim=False,niter=1,**kwargs):
 	numCCDs = 4
