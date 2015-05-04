@@ -80,7 +80,7 @@ def build_frame_list(filt,nightlyLogs=None):
 	                            ('nightIndex','i4'),('nightFrameNum','i4')])
 	return frameList
 
-def collect_data(filt,catpfx='sdssbright'):
+def collect_observations(filt,catpfx='sdssbright'):
 	import boklog
 	import bokcat
 	photdir = os.path.join(os.environ['BOK90PRIMEOUTDIR'],'catalogs_v2')
@@ -196,11 +196,13 @@ def sim_init(a_init,k_init,objs,**kwargs):
 		simdat['err'] = np.repeat(fixed_err,len(objs))
 	return simdat
 
-def sim_initobject(i,obj,frames,simdat):
+def sim_initobject(i,obj,frames,simdat,rmcal):
 	x = frames['airmass'][obj['frameIndex']]
+	dt = frames['dt'][obj['frameIndex']]
+	dk_dt = rmcal.get_terms('dkdt',0) # using a fixed value
 	mags = simdat['mag'][i] \
 	        + simdat['a_true'][obj['nightIndex'],obj['ccdNum']-1] \
-	          - simdat['k_true'][obj['nightIndex']]*x
+	          - (simdat['k_true'][obj['nightIndex']] + dk_dt*dt)*x
 	errs = np.repeat(simdat['err'][i],len(mags))
 	mags[:] += errs*np.random.normal(size=mags.shape)
 	return CalibrationObject(mags,errs)
@@ -217,6 +219,14 @@ def sim_finish(rmcal,simdat):
 	plt.scatter(simdat['k_true'][g].flatten(),
 	            (rmcal.params['k']['terms']-simdat['k_true'])[g].flatten())
 	#plt.plot([0,0.2],[0,0.2],c='g')
+
+def reject_outliers(rmcal):
+	for i,obj in enumerate(rmcal):
+		mags,errs = rmcal.get_object_phot(obj)
+		clipped = sigma_clip(mags)
+		if clipped.mask.sum() > mags.mask.sum():
+			print 'object %d rejected %d' % (i,(clipped.mask&~mags.mask).sum())
+		obj.update_mask(clipped.mask)
 
 def fiducial_model(frames,objs,verbose=True,dosim=False,niter=1,**kwargs):
 	numCCDs = 4
@@ -239,6 +249,8 @@ def fiducial_model(frames,objs,verbose=True,dosim=False,niter=1,**kwargs):
 	# construct the container for the global ubercal parameters
 	rmcal = CalibrationObjectSet(a_init,k_init,frames['dt'],
 	                             frames['airmass'],flatfield_init)
+	# currently using a fixed value for the time derivate of k, taken from P08
+	rmcal.set_fixed_dkdt(-0.7e-2/10) # given as mag/airmass/10h
 	#
 	if dosim:
 		simdat = sim_init(a_init,k_init,objs,**kwargs)
@@ -248,7 +260,7 @@ def fiducial_model(frames,objs,verbose=True,dosim=False,niter=1,**kwargs):
 		if (starNum % 10) != 0:
 			continue
 		if dosim:
-			calobj = sim_initobject(i,obj,frames,simdat)
+			calobj = sim_initobject(i,obj,frames,simdat,rmcal)
 		else:
 			calobj = CalibrationObject(obj['magADU'],obj['errADU'])
 		calobj.set_xy(obj['x'],obj['y'])
@@ -257,6 +269,7 @@ def fiducial_model(frames,objs,verbose=True,dosim=False,niter=1,**kwargs):
 		calobj.set_flat_indices(obj['ccdNum']-1)
 		calobj.set_x_indices(obj['frameIndex'])
 		calobj.set_t_indices(obj['frameIndex'])
+		calobj.set_reference_mag(obj['refMag'][0])
 		rmcal.add_object(calobj)
 	if verbose:
 		print 'number nights: ',np.sum(framesPerNight>0)
@@ -272,10 +285,9 @@ def fiducial_model(frames,objs,verbose=True,dosim=False,niter=1,**kwargs):
 		rmcal.update_params(pars)
 		if dosim:
 			sim_finish(rmcal,simdat)
+		if iternum < niter-1:
+			reject_outliers(rmcal)
 	if dosim:
 		return rmcal,simdat
 	return rmcal
-
-# frames = bokrmcal.build_frame_list('g')
-# objs = bokrmcal.load_cached_object_list('test.fits')
 

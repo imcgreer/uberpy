@@ -43,6 +43,8 @@ class CalibrationObject(object):
 		self.x_indices = x_indices
 	def set_flat_indices(self,flat_indices):
 		self.flat_indices = flat_indices
+	def set_reference_mag(self,refMag):
+		self.refMag = refMag
 	def get_numobs(self):
 		return self.nobs
 	def get_instrumental_mags(self):
@@ -50,6 +52,11 @@ class CalibrationObject(object):
 	def get_term_indices(self):
 		return (self.a_indices,self.k_indices,
 		        self.t_indices,self.x_indices,self.flat_indices)
+	def get_xy(self):
+		return (self.xpos,self.ypos)
+	def update_mask(self,mask):
+		self.mags.mask |= mask
+		self.ivars.mask |= mask
 
 class CalibrationObjectSet(object):
 	def __init__(self,aTerms,kTerms,tVals,airmasses,flatfields):
@@ -70,6 +77,22 @@ class CalibrationObjectSet(object):
 	def add_object(self,calobj):
 		self.objs.append(calobj)
 		self.nobs += calobj.get_numobs()
+	def set_fixed_dkdt(self,dkdt):
+		self.params['dkdt']['terms'] = np.array([dkdt,])
+	def get_object_phot(self,obj,returnBoth=False):
+		ai,ki,ti,xi,fi = obj.get_term_indices()
+		m_inst,ivar_inst = obj.get_instrumental_mags()
+		a = self.params['a']['terms'][ai]
+		k = self.params['k']['terms'][ki]
+		x = self.get_airmasses(xi)
+		dt = self.get_obstimes(ti)
+		dk_dt = self.get_terms('dkdt',0) # using a fixed value
+		flatfield = self.get_flatfields(fi,obj.get_xy())
+		m_cal = m_inst + a - (k + dk_dt*dt)*x + flatfield
+		if returnBoth:
+			return m_cal,1/np.sqrt(ivar_inst),m_inst
+		else:
+			return m_cal,1/np.sqrt(ivar_inst)
 	def num_params(self):
 		return np.sum(self.npar)
 	def num_objects(self):
@@ -77,11 +100,16 @@ class CalibrationObjectSet(object):
 	def num_observations(self):
 		return self.nobs
 	def get_terms(self,p,indices):
-		return self.params[p]['terms'][indices]
+		if self.params[p]['terms'] is None:
+			return 0
+		else:
+			return self.params[p]['terms'][indices]
 	def get_obstimes(self,t_indices):
 		return self.tVals[t_indices]
 	def get_airmasses(self,x_indices):
 		return self.airmasses[x_indices]
+	def get_flatfields(self,flat_indices,xy):
+		return 0 # not implemented
 	def update_params(self,par):
 		i0 = 0
 		for p in ['a','k','dkdt','flat']:
@@ -141,10 +169,9 @@ def ubercal_solve(calset,**kwargs):
 		a = calset.get_terms('a',a_indices)
 		k = calset.get_terms('k',k_indices)
 		x = calset.get_airmasses(x_indices)
-		dk_dt = 0 # placeholder
-		#flatfield = calset.get_flatfields(flat_indices)
-		flatfield = 0 # placeholder
-		dt = 0 # placeholder
+		dk_dt = calset.get_terms('dkdt',0) # using a fixed value
+		dt = calset.get_obstimes(t_indices)
+		flatfield = calset.get_flatfields(flat_indices,obj.get_xy())
 		# construct indices into the parameter axis
 		nobs_i = obj.get_numobs()
 		par_a_indx = calset.parameter_indices('a',a_indices)
@@ -160,7 +187,7 @@ def ubercal_solve(calset,**kwargs):
 		# parameters and for for objects with poorly defined free parameters
 		a_bad = np.ma.masked_array(a.data,~a.mask).filled(0)
 		k_bad = np.ma.masked_array(k.data,~k.mask).filled(0)
-		m_inst[:] += a_bad - (k_bad + dk_dt*dt)*x + flatfield
+		m_inst.data[:] += a_bad - (k_bad + dk_dt*dt)*x + flatfield
 		# normalized inverse variance weights
 		w = ivar_inst / np.sum(ivar_inst)
 		# inverse-variance-weighted mean instrumental magnitude
