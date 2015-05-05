@@ -88,8 +88,7 @@ class CalibrationObjectSet(object):
 		dt = self.get_obstimes(ti)
 		dk_dt = self.get_terms('dkdt',0) # using a fixed value
 		flatfield = self.get_flatfields(fi,obj.get_xy())
-		#m_cal = m_inst + a - (k + dk_dt*dt)*x + flatfield
-		m_cal = m_inst - (a - (k + dk_dt*dt)*x + flatfield)
+		m_cal = m_inst + a - (k + dk_dt*dt)*x + flatfield
 		if returnBoth:
 			return m_cal,1/np.sqrt(ivar_inst),m_inst
 		else:
@@ -197,7 +196,7 @@ def ubercal_solve(calset,**kwargs):
 		if bigmatrix:
 			i2 = i1 + nobs_i
 			_ii = np.arange(i1,i2)      # indexes into rows of A (observations)
-			b[i1:i2] = m_inst - m_mean
+			b[i1:i2] = -(m_inst - m_mean)
 			cinv[i1:i2] = ivar_inst
 			A[_ii,par_a_indx] = 1
 			A[_ii,par_k_indx] = -x
@@ -206,7 +205,7 @@ def ubercal_solve(calset,**kwargs):
 			i1 += nobs_i
 			continue
 		# b column vector (eq. 13)
-		b = (m_inst - m_mean)*ivar_inst
+		b = -(m_inst - m_mean)*ivar_inst
 		wb = np.sum(b)*w
 		np.add.at( atcinvb, par_a_indx,   b-wb    )
 		np.add.at( atcinvb, par_k_indx, -(b-wb)*x )

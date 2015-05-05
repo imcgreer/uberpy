@@ -184,7 +184,8 @@ def sim_init(a_init,k_init,objs,**kwargs):
 	fixed_err = kwargs.get('sim_fixed_err',0.03)
 	np.random.seed(1)
 	simdat = {}
-	simdat['a_true'] = a_range*(0.5-np.random.random_sample(a_init.shape))
+	#simdat['a_true'] = a_range*(0.5-np.random.random_sample(a_init.shape))
+	simdat['a_true'] = a_range*np.random.random_sample(a_init.shape)
 	simdat['k_true'] = k_range*np.random.random_sample(k_init.shape)
 	if kwargs.get('sim_userefmag',False):
 		simdat['mag'] = np.array([objs[i]['refMag'][0] for i in objs])
@@ -200,9 +201,11 @@ def sim_initobject(i,obj,frames,simdat,rmcal):
 	x = frames['airmass'][obj['frameIndex']]
 	dt = frames['dt'][obj['frameIndex']]
 	dk_dt = rmcal.get_terms('dkdt',0) # using a fixed value
-	mags = simdat['mag'][i] \
-	        + simdat['a_true'][obj['nightIndex'],obj['ccdNum']-1] \
+	flatfield = 0
+	mags = simdat['mag'][i] - (
+	         simdat['a_true'][obj['nightIndex'],obj['ccdNum']-1] 
 	          - (simdat['k_true'][obj['nightIndex']] + dk_dt*dt)*x
+	           + flatfield )
 	errs = np.repeat(simdat['err'][i],len(mags))
 	mags[:] += errs*np.random.normal(size=mags.shape)
 	return CalibrationObject(mags,errs)
@@ -213,6 +216,7 @@ def sim_finish(rmcal,simdat):
 	plt.subplot2grid((2,4),(0,0),colspan=3)
 	g = np.where(~rmcal.params['k']['terms'].mask)
 	dk = (rmcal.params['k']['terms']-simdat['k_true'])[g].flatten()
+	plt.axhline(0,c='gray')
 	plt.plot(dk)
 	#plt.scatter(simdat['k_true'][g].flatten(),
 	#            (rmcal.params['k']['terms']-simdat['k_true'])[g].flatten())
@@ -223,6 +227,7 @@ def sim_finish(rmcal,simdat):
 	plt.subplot2grid((2,4),(1,0),colspan=3)
 	g = np.where(~rmcal.params['a']['terms'].mask)
 	da = (rmcal.params['a']['terms']-simdat['a_true'])[g].flatten()
+	plt.axhline(0,c='gray')
 	plt.plot(da)
 	#plt.scatter(simdat['a_true'][g].flatten(),
 	#            (rmcal.params['a']['terms']-simdat['a_true'])[g].flatten())
@@ -239,10 +244,9 @@ def sim_finish(rmcal,simdat):
 	frac_sig3 = np.sum(dm3.mask & ~dm.mask) / float(np.sum(~dm.mask))
 	mm = 1000 # millimag
 	print
-	print '<da> = ',np.median(da)
-	print '<dk> = ',np.median(dk)
-	print '     @AM=1.25 ',np.median(dk)*1.25
-	print '     @AM=1.5  ',np.median(dk)*1.5
+	print '<da> = %.1f' % (mm*np.median(da))
+	print '<dk> = %.1f' % (mm*np.median(dk)),
+	print '    @AM=2.0  %.1f' % (mm*np.median(dk)*2)
 	print
 	print '%.2f %.2f %.2f %.2f %.2f' % \
 	       (mm*dm.mean(),mm*dm.std(),mm*dm3.std(),100*frac_sig3,0.0)
