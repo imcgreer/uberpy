@@ -208,17 +208,49 @@ def sim_initobject(i,obj,frames,simdat,rmcal):
 	return CalibrationObject(mags,errs)
 
 def sim_finish(rmcal,simdat):
-	plt.figure(figsize=(10,5))
-	plt.subplot(121)
-	g = np.where(~rmcal.params['a']['terms'].mask)
-	plt.scatter(simdat['a_true'][g].flatten(),
-	            (rmcal.params['a']['terms']-simdat['a_true'])[g].flatten())
-	#plt.plot([-0.15,0.15],[-0.15,0.15],c='g')
-	plt.subplot(122)
+	plt.figure(figsize=(12,6))
+	plt.subplots_adjust(0.03,0.03,0.99,0.99)
+	plt.subplot2grid((2,4),(0,0),colspan=3)
 	g = np.where(~rmcal.params['k']['terms'].mask)
-	plt.scatter(simdat['k_true'][g].flatten(),
-	            (rmcal.params['k']['terms']-simdat['k_true'])[g].flatten())
+	dk = (rmcal.params['k']['terms']-simdat['k_true'])[g].flatten()
+	plt.plot(dk)
+	#plt.scatter(simdat['k_true'][g].flatten(),
+	#            (rmcal.params['k']['terms']-simdat['k_true'])[g].flatten())
 	#plt.plot([0,0.2],[0,0.2],c='g')
+	plt.xlim(0,len(g[0]))
+	plt.ylim(-0.5,0.5)
+	#
+	plt.subplot2grid((2,4),(1,0),colspan=3)
+	g = np.where(~rmcal.params['a']['terms'].mask)
+	da = (rmcal.params['a']['terms']-simdat['a_true'])[g].flatten()
+	plt.plot(da)
+	#plt.scatter(simdat['a_true'][g].flatten(),
+	#            (rmcal.params['a']['terms']-simdat['a_true'])[g].flatten())
+	#plt.plot([-0.15,0.15],[-0.15,0.15],c='g')
+	plt.xlim(0,len(g[0]))
+	plt.ylim(-0.8,0.8)
+	#
+	dm = []
+	for i,obj in enumerate(rmcal):
+		mag,err = rmcal.get_object_phot(obj)
+		dm.append(obj.refMag - mag)
+	dm = np.ma.concatenate(dm)
+	dm3 = sigma_clip(dm,sig=3,iters=1)
+	frac_sig3 = np.sum(dm3.mask & ~dm.mask) / float(np.sum(~dm.mask))
+	mm = 1000 # millimag
+	print
+	print '<da> = ',np.median(da)
+	print '<dk> = ',np.median(dk)
+	print '     @AM=1.25 ',np.median(dk)*1.25
+	print '     @AM=1.5  ',np.median(dk)*1.5
+	print
+	print '%.2f %.2f %.2f %.2f %.2f' % \
+	       (mm*dm.mean(),mm*dm.std(),mm*dm3.std(),100*frac_sig3,0.0)
+	#
+	plt.subplot2grid((2,4),(0,3),rowspan=2)
+	plt.hist(dm,50)
+	#plt.xlim(0,len(dm))
+	#plt.ylim(-0.8,0.8)
 
 def reject_outliers(rmcal):
 	for i,obj in enumerate(rmcal):
@@ -229,6 +261,7 @@ def reject_outliers(rmcal):
 		obj.update_mask(clipped.mask)
 
 def fiducial_model(frames,objs,verbose=True,dosim=False,niter=1,**kwargs):
+	ndownsample = kwargs.get('downsample',1)
 	numCCDs = 4
 	numFrames = len(frames)
 	# identify nights to process
@@ -250,26 +283,28 @@ def fiducial_model(frames,objs,verbose=True,dosim=False,niter=1,**kwargs):
 	rmcal = CalibrationObjectSet(a_init,k_init,frames['dt'],
 	                             frames['airmass'],flatfield_init)
 	# currently using a fixed value for the time derivate of k, taken from P08
-	rmcal.set_fixed_dkdt(-0.7e-2/10) # given as mag/airmass/10h
+	rmcal.set_fixed_dkdt(0)
+	#rmcal.set_fixed_dkdt(-0.7e-2/10) # given as mag/airmass/10h
 	#
 	if dosim:
 		simdat = sim_init(a_init,k_init,objs,**kwargs)
 	# loop over individual stars and set their particulars for each 
 	# observation, then add them to the calibration set
 	for i,(starNum,obj) in enumerate(objs.items()):
-		if (starNum % 10) != 0:
+		if (starNum % ndownsample) != 0:
 			continue
 		if dosim:
 			calobj = sim_initobject(i,obj,frames,simdat,rmcal)
+			calobj.set_reference_mag(simdat['mag'][i])
 		else:
 			calobj = CalibrationObject(obj['magADU'],obj['errADU'])
+			calobj.set_reference_mag(obj['refMag'][0])
 		calobj.set_xy(obj['x'],obj['y'])
 		calobj.set_a_indices((obj['nightIndex'],obj['ccdNum']-1))
 		calobj.set_k_indices(obj['nightIndex'])
 		calobj.set_flat_indices(obj['ccdNum']-1)
 		calobj.set_x_indices(obj['frameIndex'])
 		calobj.set_t_indices(obj['frameIndex'])
-		calobj.set_reference_mag(obj['refMag'][0])
 		rmcal.add_object(calobj)
 	if verbose:
 		print 'number nights: ',np.sum(framesPerNight>0)
@@ -290,4 +325,6 @@ def fiducial_model(frames,objs,verbose=True,dosim=False,niter=1,**kwargs):
 	if dosim:
 		return rmcal,simdat
 	return rmcal
+
+# rv = bokrmcal.fiducial_model(frames,objs,dosim=True,downsample=10,sim_userefmag=True,sim_userealerrors=True)
 

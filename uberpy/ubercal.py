@@ -3,7 +3,7 @@
 import numpy as np
 
 class CalibrationObject(object):
-	def __init__(self,mags,errs,errMin=0.02):
+	def __init__(self,mags,errs,errMin=0.01):
 		'''CalibrationObject(mags,errs) 
 		    An object (star or galaxy) with multiple observations that can be
 		    used for relative photometric calibration. The object is defined
@@ -88,7 +88,8 @@ class CalibrationObjectSet(object):
 		dt = self.get_obstimes(ti)
 		dk_dt = self.get_terms('dkdt',0) # using a fixed value
 		flatfield = self.get_flatfields(fi,obj.get_xy())
-		m_cal = m_inst + a - (k + dk_dt*dt)*x + flatfield
+		#m_cal = m_inst + a - (k + dk_dt*dt)*x + flatfield
+		m_cal = m_inst - (a - (k + dk_dt*dt)*x + flatfield)
 		if returnBoth:
 			return m_cal,1/np.sqrt(ivar_inst),m_inst
 		else:
