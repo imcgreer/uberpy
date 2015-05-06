@@ -50,6 +50,38 @@ def get_mjd(utDate,utTime):
 	utStr = '-'.join([utDate[:4],utDate[4:6],utDate[6:]]) + ' ' + utTime
 	return Time(utStr,scale='utc').mjd
 
+def select_photometric_images(filt):
+	'''Add initial cut on photometricity, based on seeing values and zeropoints
+	   calculated from the SExtractor catalogs.'''
+	zpmin = {'g':25.4}
+	iqdir = os.path.join(os.environ['BOK90PRIMEDIR'],'py')
+	iqlog = np.loadtxt(os.path.join(iqdir,'bokimagequality_%s.log'%filt),
+	                   dtype=[('utdate','S8'),('frame','i4'),
+	                          ('sky','f4'),('seeing','f4'),('zeropoint','f4')])
+	isphoto = ( (iqlog['seeing'] < 2.5) &
+	            (iqlog['zeropoint'] > zpmin[filt]) )
+	print 'iter1: rejected %d frames out of %d' % ((~isphoto).sum(),len(iqlog))
+	# require neighboring images to be photometric as well, to handle varying
+	# conditions
+	min_nphoto = 5
+	nphoto = np.zeros(len(iqlog),dtype=np.int)
+	for i in np.where(isphoto)[0]:
+		up,down = True,True
+		for j in range(1,min_nphoto+1):
+			if up:
+				if i+j<len(iqlog) and isphoto[i+j]:
+					nphoto[i] += 1
+				else:
+					up = False
+			if down:
+				if i-j>0 and isphoto[i-j]:
+					nphoto[i] += 1
+				else:
+					down = False
+	isphoto &= nphoto > min_nphoto
+	print 'iter2: rejected %d frames out of %d' % ((~isphoto).sum(),len(iqlog))
+	return iqlog,isphoto
+
 def build_frame_list(filt,nightlyLogs=None):
 	'''Collapse the nightly observing logs into a master frame list containing
 	   the relevant info for each observation, namely:
@@ -61,23 +93,30 @@ def build_frame_list(filt,nightlyLogs=None):
 	refTimeUT = '07:00:00.0' # 7h UT = midnight MST
 	if nightlyLogs is None:
 		nightlyLogs = boklog.load_Bok_logs()
+	iqlog,isphoto = select_photometric_images(filt)
 	frameList = []
 	for night,utd in enumerate(sorted(nightlyLogs.keys())):
 		frames = nightlyLogs[utd]
 		ii = np.where((frames['filter']==filt) &
 		              (frames['imType']=='object'))[0]
+		if len(ii)==0:
+			continue
 		mjds = np.array([get_mjd(utd,frames['utStart'][i]) for i in ii])
 		epochIndex = np.repeat(night,len(ii))
 		refTime = get_mjd(utd,refTimeUT)
 		dt = 24*(mjds-refTime)
+		jj = np.array([np.where((iqlog['utdate']==utd) &
+		                        (iqlog['frame']==i))[0][0]
+		                 for i in ii])
 		frameList.append((mjds,dt,
 		                  frames['expTime'][ii],frames['airmass'][ii],
-		                  epochIndex,ii))
+		                  epochIndex,ii,isphoto[jj]))
 	frameList = np.hstack(frameList)
 	frameList = np.core.records.fromarrays(frameList,
 	                     dtype=[('mjd','f8'),('dt','f4'),
 	                            ('expTime','f4'),('airmass','f4'),
-	                            ('nightIndex','i4'),('nightFrameNum','i4')])
+	                            ('nightIndex','i4'),('nightFrameNum','i4'),
+	                            ('isPhoto','i2')])
 	return frameList
 
 def collect_observations(filt,catpfx='sdssbright'):
@@ -184,8 +223,8 @@ def sim_init(a_init,k_init,objs,**kwargs):
 	fixed_err = kwargs.get('sim_fixed_err',0.03)
 	np.random.seed(1)
 	simdat = {}
-	#simdat['a_true'] = a_range*(0.5-np.random.random_sample(a_init.shape))
 	simdat['a_true'] = a_range*np.random.random_sample(a_init.shape)
+	simdat['a_true'] -= np.median(simdat['a_true'])
 	simdat['k_true'] = k_range*np.random.random_sample(k_init.shape)
 	if kwargs.get('sim_userefmag',False):
 		simdat['mag'] = np.array([objs[i]['refMag'][0] for i in objs])
@@ -211,34 +250,30 @@ def sim_initobject(i,obj,frames,simdat,rmcal):
 	return CalibrationObject(mags,errs)
 
 def sim_finish(rmcal,simdat):
+	gk = np.where(~rmcal.params['k']['terms'].mask)
+	dk = (rmcal.params['k']['terms']-simdat['k_true'])[gk].flatten()
+	ga = np.where(~rmcal.params['a']['terms'].mask)
+	da = (rmcal.params['a']['terms']-simdat['a_true'])[ga].flatten()
+	median_a_offset = np.median(da)
+	#
 	plt.figure(figsize=(12,6))
 	plt.subplots_adjust(0.03,0.03,0.99,0.99)
 	plt.subplot2grid((2,4),(0,0),colspan=3)
-	g = np.where(~rmcal.params['k']['terms'].mask)
-	dk = (rmcal.params['k']['terms']-simdat['k_true'])[g].flatten()
 	plt.axhline(0,c='gray')
 	plt.plot(dk)
-	#plt.scatter(simdat['k_true'][g].flatten(),
-	#            (rmcal.params['k']['terms']-simdat['k_true'])[g].flatten())
-	#plt.plot([0,0.2],[0,0.2],c='g')
-	plt.xlim(0,len(g[0]))
+	plt.xlim(0,len(gk[0]))
 	plt.ylim(-0.5,0.5)
 	#
 	plt.subplot2grid((2,4),(1,0),colspan=3)
-	g = np.where(~rmcal.params['a']['terms'].mask)
-	da = (rmcal.params['a']['terms']-simdat['a_true'])[g].flatten()
 	plt.axhline(0,c='gray')
-	plt.plot(da)
-	#plt.scatter(simdat['a_true'][g].flatten(),
-	#            (rmcal.params['a']['terms']-simdat['a_true'])[g].flatten())
-	#plt.plot([-0.15,0.15],[-0.15,0.15],c='g')
-	plt.xlim(0,len(g[0]))
+	plt.plot(da-median_a_offset)
+	plt.xlim(0,len(ga[0]))
 	plt.ylim(-0.8,0.8)
 	#
 	dm = []
 	for i,obj in enumerate(rmcal):
 		mag,err = rmcal.get_object_phot(obj)
-		dm.append(obj.refMag - mag)
+		dm.append(obj.refMag - (mag - median_a_offset))
 	dm = np.ma.concatenate(dm)
 	dm3 = sigma_clip(dm,sig=3,iters=1)
 	frac_sig3 = np.sum(dm3.mask & ~dm.mask) / float(np.sum(~dm.mask))
@@ -253,8 +288,25 @@ def sim_finish(rmcal,simdat):
 	#
 	plt.subplot2grid((2,4),(0,3),rowspan=2)
 	plt.hist(dm,50)
-	#plt.xlim(0,len(dm))
-	#plt.ylim(-0.8,0.8)
+
+def cal_finish(rmcal):
+	dm = []
+	for i,obj in enumerate(rmcal):
+		mag,err = rmcal.get_object_phot(obj)
+		dm.append(obj.refMag - mag)
+	dm = np.ma.concatenate(dm)
+	dm3 = sigma_clip(dm,sig=3,iters=1)
+	median_dm = np.ma.median(dm3)
+	dm -= median_dm
+	dm3 -= median_dm
+	frac_sig3 = np.sum(dm3.mask & ~dm.mask) / float(np.sum(~dm.mask))
+	mm = 1000 # millimag
+	print
+	print '%.2f %.2f %.2f %.2f %.2f' % \
+	       (mm*dm.mean(),mm*dm.std(),mm*dm3.std(),100*frac_sig3,0.0)
+	#
+	plt.figure()
+	plt.hist(dm,50,(-1,1))
 
 def reject_outliers(rmcal):
 	for i,obj in enumerate(rmcal):
@@ -301,7 +353,12 @@ def fiducial_model(frames,objs,verbose=True,dosim=False,niter=1,**kwargs):
 			calobj = sim_initobject(i,obj,frames,simdat,rmcal)
 			calobj.set_reference_mag(simdat['mag'][i])
 		else:
+			# construct a calibration object from the flux/err vectors
 			calobj = CalibrationObject(obj['magADU'],obj['errADU'])
+			# mask the pre-assigned non-photometric observations
+			# XXX before doing this, reasonable a and k values must be set
+			#calobj.update_mask(frames['isPhoto'][obj['frameIndex']]==0)
+			# set the catalog magnitude for this object
 			calobj.set_reference_mag(obj['refMag'][0])
 		calobj.set_xy(obj['x'],obj['y'])
 		calobj.set_a_indices((obj['nightIndex'],obj['ccdNum']-1))

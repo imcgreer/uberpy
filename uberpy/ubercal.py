@@ -184,7 +184,8 @@ def ubercal_solve(calset,**kwargs):
 		# construct << A^T * C^-1 * B >>
 		#
 		# update instrumental magnitude based on current values for fixed
-		# parameters and for for objects with poorly defined free parameters
+		# parameters and for objects with poorly defined free parameters
+		# XXX need to check here that masked arrays are being handled properly
 		a_bad = np.ma.masked_array(a.data,~a.mask).filled(0)
 		k_bad = np.ma.masked_array(k.data,~k.mask).filled(0)
 		m_inst.data[:] += a_bad - (k_bad + dk_dt*dt)*x + flatfield
