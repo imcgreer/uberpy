@@ -221,19 +221,26 @@ def sim_init(a_init,k_init,objs,**kwargs):
 	k_range = kwargs.get('sim_k_range',0.2)
 	fixed_mag = kwargs.get('sim_fixed_mag',18.)
 	fixed_err = kwargs.get('sim_fixed_err',0.03)
+	print 'SIMULATION: a_range=%.2f  k_range=%.2f' % (a_range,k_range)
 	np.random.seed(1)
 	simdat = {}
 	simdat['a_true'] = a_range*np.random.random_sample(a_init.shape)
 	simdat['a_true'] -= np.median(simdat['a_true'])
 	simdat['k_true'] = k_range*np.random.random_sample(k_init.shape)
-	if kwargs.get('sim_userefmag',False):
+	simdat['errMin'] = kwargs.get('errMin',0.01)
+	print 'SIMULATION: minimum rms %.3f' % simdat['errMin']
+	if kwargs.get('sim_userealmags',True):
 		simdat['mag'] = np.array([objs[i]['refMag'][0] for i in objs])
+		print 'SIMULATION: using real magnitudes'
 	else:
 		simdat['mag'] = np.repeat(fixed_mag,len(objs))
-	if kwargs.get('sim_userealerrors',False):
+		print 'SIMULATION: using fixed magnitude %.2f' % fixed_mag
+	if kwargs.get('sim_userealerrs',True):
 		simdat['err'] = np.array([np.median(objs[i]['errADU']) for i in objs])
+		print 'SIMULATION: using real errors'
 	else:
 		simdat['err'] = np.repeat(fixed_err,len(objs))
+		print 'SIMULATION: using fixed errors %.2f' % fixed_err
 	return simdat
 
 def sim_initobject(i,obj,frames,simdat,rmcal):
@@ -247,7 +254,7 @@ def sim_initobject(i,obj,frames,simdat,rmcal):
 	           + flatfield )
 	errs = np.repeat(simdat['err'][i],len(mags))
 	mags[:] += errs*np.random.normal(size=mags.shape)
-	return CalibrationObject(mags,errs)
+	return CalibrationObject(mags,errs,errMin=simdat['errMin'])
 
 def sim_finish(rmcal,simdat):
 	gk = np.where(~rmcal.params['k']['terms'].mask)
@@ -283,7 +290,10 @@ def sim_finish(rmcal,simdat):
 	print '<dk> = %.1f' % (mm*np.median(dk)),
 	print '    @AM=2.0  %.1f' % (mm*np.median(dk)*2)
 	print
-	print '%.2f %.2f %.2f %.2f %.2f' % \
+	print '%8s %8s %8s %8s %8s   [millimag]' % \
+	        ('<dm>','sig','sig3','%(3sig)','sig0')
+	print '%8s %8s %8s %8s %8s' % tuple(['-'*6]*5)
+	print '%8.2f %8.2f %8.2f %8.2f %8.2f' % \
 	       (mm*dm.mean(),mm*dm.std(),mm*dm3.std(),100*frac_sig3,0.0)
 	#
 	plt.subplot2grid((2,4),(0,3),rowspan=2)
@@ -302,7 +312,10 @@ def cal_finish(rmcal):
 	frac_sig3 = np.sum(dm3.mask & ~dm.mask) / float(np.sum(~dm.mask))
 	mm = 1000 # millimag
 	print
-	print '%.2f %.2f %.2f %.2f %.2f' % \
+	print '%8s %8s %8s %8s %8s %8s  [millimag]' % \
+	        ('<dm>','sig','sig3','%(3sig)','sig0')
+	print '%8s %8s %8s %8s %8s' % tuple(['-'*6]*5)
+	print '%8.2f %8.2f %8.2f %8.2f %8.2f' % \
 	       (mm*dm.mean(),mm*dm.std(),mm*dm3.std(),100*frac_sig3,0.0)
 	#
 	plt.figure()
