@@ -1,6 +1,68 @@
 #!/usr/bin/env python
 
+from collections import defaultdict
 import numpy as np
+from scipy.interpolate import LSQBivariateSpline
+
+######### ######### ######### ######### ######### ######### ######### ######### 
+#########                       Flat Field models                     #########
+######### ######### ######### ######### ######### ######### ######### ######### 
+
+class NullFlatField(object):
+	def __init__(self,*args):
+		return
+	def fit(self,*args,**kwargs):
+		return
+	def __call__(self,*args):
+		return 0.0
+
+class SplineFlatField(object):
+	def __init__(self,nx,ny):
+		self.nx = nx
+		self.ny = ny
+		# XXX hardcoding in the knots and spline order for now
+		self.tx = [0,nx/2,nx]
+		self.ty = [0,ny/2,ny]
+		self.kx = 3
+		self.ky = 3
+	def fit(self,x,y,f,ivar=None):
+		self.splineFit = LSQBivariateSpline(x,y,f,self.tx,self.ty,w=ivar,
+		                                    kx=self.kx,ky=self.ky)
+	def __call__(self,x,y):
+		return np.array([self.splineFit(_x,_y) for _x,_y in zip(x,y)])
+	def make_image(self,res=1):
+		x = np.arange(0,self.nx,res)
+		y = np.arange(0,self.ny,res)
+		return self.splineFit(x,y)
+
+class FlatFieldSet(object):
+	def __init__(self,shape):
+		self.shape = shape
+		self.flatfields = []
+	def get_shape(self):
+		return self.shape
+	def __iter__(self):
+		for ff in self.flatfields:
+			yield ff
+
+def init_flatfields(shape,nx,ny,method='spline',**kwargs):
+	flatfields = FlatFieldSet(shape)
+	print flatfields
+	if method=='spline':
+		generator = SplineFlatField
+	elif method=='array':
+		generator = lambda nx,ny,**kwargs: np.zeros((nY,nX))
+	elif method=='null':
+		generator = NullFlatField
+	for i in range(np.product(shape)):
+		flatfields.flatfields.append(generator(nx,ny,**kwargs))
+	return flatfields
+
+
+
+######### ######### ######### ######### ######### ######### ######### ######### 
+#########                   Ubercalibration algorithm                 #########
+######### ######### ######### ######### ######### ######### ######### ######### 
 
 class CalibrationObject(object):
 	def __init__(self,mags,errs,errMin=0.01):
@@ -59,17 +121,28 @@ class CalibrationObject(object):
 		self.ivars.mask |= mask
 
 class CalibrationObjectSet(object):
-	def __init__(self,aTerms,kTerms,tVals,airmasses,flatfields):
+	def __init__(self,aTerms,kTerms,tVals,airmasses,flatfields,**kwargs):
+		fit_a = kwargs.get('fit_a',True)
+		fit_k = kwargs.get('fit_k',True)
+		fit_dkdt = kwargs.get('fit_dkdt',False)
+		fit_flat = kwargs.get('fit_flat',False)
+		dTerms = np.array([])
+		fTerms = np.array([])
+		if kwargs.get('flat_poly2d',False):
+			fTerms = kwargs.get('flat_poly2d')
+		elif kwargs.get('flat_iteratedfit',False):
+			pass
+		#
 		self.objs = []
 		self.tVals = tVals
 		self.airmasses = airmasses
 		self.flatfields = flatfields
 		self.nobs = 0
 		self.params = {
-		     'a':{ 'fit':True,  'terms':aTerms, 'num':aTerms.size },
-		     'k':{ 'fit':True,  'terms':kTerms, 'num':kTerms.size },
-		  'dkdt':{ 'fit':False, 'terms':None,   'num':0 },
-		  'flat':{ 'fit':False, 'terms':None,   'num':0 },
+		     'a':{ 'fit':fit_a,    'terms':aTerms, 'num':aTerms.size },
+		     'k':{ 'fit':fit_k,    'terms':kTerms, 'num':kTerms.size },
+		  'dkdt':{ 'fit':fit_dkdt, 'terms':dTerms, 'num':dTerms.size },
+		  'flat':{ 'fit':fit_flat, 'terms':fTerms, 'num':fTerms.size },
 		}
 		self.npar = np.array([self.params[paramName]['num'] 
 		                        for paramName in ['a','k','dkdt','flat']
@@ -109,7 +182,7 @@ class CalibrationObjectSet(object):
 	def get_airmasses(self,x_indices):
 		return self.airmasses[x_indices]
 	def get_flatfields(self,flat_indices,xy):
-		return 0 # not implemented
+		return 0 #self.flatfields[flat_indices](*xy)
 	def update_params(self,par):
 		i0 = 0
 		for p in ['a','k','dkdt','flat']:
@@ -119,6 +192,22 @@ class CalibrationObjectSet(object):
 				self.params[p]['terms'].data[:] = \
 				                         par[i0:i0+nterms].reshape(shape)
 			i0 += nterms
+	def update_flatfields(self):
+		resv = defaultdict(list)
+		for obj in self.objs:
+			mag,ivar = self.get_object_phot(obj) # actually returns err
+			_,_,_,_,fi = obj.get_term_indices()
+			x,y = obj.get_xy()
+			ivar[ivar>0] **= -2 # convert to inverse variance
+			ii = np.ravel_multi_index(fi,self.flatfields.get_shape())
+			for i,flat in enumerate(self.flatfields):
+				# XXX should assume masking is correct here and be cleaner?
+				jj = np.where((ii==i) & (ivar>0) & ~mag.mask)[0]
+				if len(jj) > 0:
+					resv[i].append((x[jj],y[jj],mag[jj]-obj.refMag,ivar[jj]))
+		for i,flat in enumerate(self.flatfields):
+			resarr = np.hstack(resv[i])
+			flat.fit(*resarr)
 	def __iter__(self):
 		for obj in self.objs:
 			yield obj

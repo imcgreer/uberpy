@@ -3,6 +3,7 @@
 import os
 from collections import defaultdict
 import numpy as np
+from scipy.stats import scoreatpercentile
 from astropy.stats import sigma_clip
 from astropy.time import Time,TimeDelta
 import fitsio
@@ -10,11 +11,12 @@ import fitsio
 import matplotlib.pyplot as plt
 
 #from .ubercal import CalibrationObject,CalibrationObjectSet,ubercal_solve
-from ubercal import CalibrationObject,CalibrationObjectSet,ubercal_solve
+from ubercal import CalibrationObject,CalibrationObjectSet,ubercal_solve,init_spline_flatfields,init_array_flatfields
 
 nX,nY = 4096,4032
 nX2 = nX//2
 nY2 = nY//2
+nCCD = 4
 
 # divide nights into contiguous observing blocks
 bok_runs = [
@@ -216,6 +218,30 @@ def load_cached_bok_data(fileName):
 		objectList[starNum] = data[i1:i2]
 	return frameList,objectList
 
+class SimFlatField(object):
+	def __init__(self,n=1,kind='gradient',dm=0.3):
+		#self.coeffs = np.random.rand(n,nCCD,2)
+		self.coeffs = np.array([[[0.0,0.0],
+		                         [0.0,1.0],
+		                         [1.0,0.0],
+		                         [1.0,1.0]]])
+		self.dims = (nY,nX)
+		self.dm = dm
+		if kind=='gradient':
+			self.flatfun = self._gradientfun
+	def _gradientfun(self,coeff,x,y):
+		norm = coeff.sum(axis=-1)
+		norm[norm==0] = 1
+		return ( (coeff[...,0]*(x/float(nX)) + 
+		          coeff[...,1]*(y/float(nY)))
+		         * self.dm / norm )
+	def __call__(self,indices,x,y):
+		coeff = self.coeffs[indices]
+		return self.flatfun(coeff,x,y)
+	def make_image(self,indices):
+		Y,X = np.indices(self.dims)
+		return self.__call__(indices,X,Y)
+
 def sim_init(a_init,k_init,objs,**kwargs):
 	a_range = kwargs.get('sim_a_range',0.3)
 	k_range = kwargs.get('sim_k_range',0.2)
@@ -241,17 +267,26 @@ def sim_init(a_init,k_init,objs,**kwargs):
 	else:
 		simdat['err'] = np.repeat(fixed_err,len(objs))
 		print 'SIMULATION: using fixed errors %.2f' % fixed_err
+	if kwargs.get('sim_addflatfield',True):
+		dm = kwargs.get('sim_flatfield_range',0.3)
+		simdat['flatfield'] = SimFlatField(n=1,kind='gradient',dm=dm)
+		print 'SIMULATION: applying %s flat field' % 'gradient'
+		print 'SIMULATION:   maximum range dm=%.2f' % dm
+	else:
+		simdat['flatfield'] = lambda *args: 0
+		print 'SIMULATION: no flat field variation'
 	return simdat
 
 def sim_initobject(i,obj,frames,simdat,rmcal):
 	x = frames['airmass'][obj['frameIndex']]
 	dt = frames['dt'][obj['frameIndex']]
 	dk_dt = rmcal.get_terms('dkdt',0) # using a fixed value
-	flatfield = 0
+	flatfield = simdat['flatfield']
+	flatIndex = (np.repeat(0,len(obj)),obj['ccdNum']-1)
 	mags = simdat['mag'][i] - (
 	         simdat['a_true'][obj['nightIndex'],obj['ccdNum']-1] 
 	          - (simdat['k_true'][obj['nightIndex']] + dk_dt*dt)*x
-	           + flatfield )
+	           + flatfield(flatIndex,obj['x'],obj['y']) )
 	errs = np.repeat(simdat['err'][i],len(mags))
 	mags[:] += errs*np.random.normal(size=mags.shape)
 	return CalibrationObject(mags,errs,errMin=simdat['errMin'])
@@ -297,7 +332,7 @@ def sim_finish(rmcal,simdat):
 	       (mm*dm.mean(),mm*dm.std(),mm*dm3.std(),100*frac_sig3,0.0)
 	#
 	plt.subplot2grid((2,4),(0,3),rowspan=2)
-	plt.hist(dm,50)
+	plt.hist(dm,50,(-0.2,0.2))
 
 def cal_finish(rmcal):
 	dm = []
@@ -331,6 +366,7 @@ def reject_outliers(rmcal):
 
 def fiducial_model(frames,objs,verbose=True,dosim=False,niter=1,**kwargs):
 	ndownsample = kwargs.get('downsample',1)
+	doflats = kwargs.get('doflats',True)
 	numCCDs = 4
 	numFrames = len(frames)
 	# identify nights to process
@@ -346,8 +382,11 @@ def fiducial_model(frames,objs,verbose=True,dosim=False,niter=1,**kwargs):
 	# initialize the k-term array to zeros, masking non-photometric nights
 	k_init = np.ma.array(np.zeros(numNights),mask=False)
 	k_init[bad_nights] = np.ma.masked
-	# initialize the flat field arrays to zeros, one per CCD
-	flatfield_init = np.zeros((numCCDs,nY,nX))
+	# initialize the flat field arrays 
+	if doflats:
+		flatfield_init = init_flatfields((numCCDs,),nX,nY,method='spline')
+	else:
+		flatfield_init = init_flatfields((numCCDs,),nX,nY,method='null')
 	# construct the container for the global ubercal parameters
 	rmcal = CalibrationObjectSet(a_init,k_init,frames['dt'],
 	                             frames['airmass'],flatfield_init)
@@ -374,9 +413,10 @@ def fiducial_model(frames,objs,verbose=True,dosim=False,niter=1,**kwargs):
 			# set the catalog magnitude for this object
 			calobj.set_reference_mag(obj['refMag'][0])
 		calobj.set_xy(obj['x'],obj['y'])
+		# XXX should require all of these to be tuples of arrays for consistency
 		calobj.set_a_indices((obj['nightIndex'],obj['ccdNum']-1))
 		calobj.set_k_indices(obj['nightIndex'])
-		calobj.set_flat_indices(obj['ccdNum']-1)
+		calobj.set_flat_indices((obj['ccdNum']-1,))
 		calobj.set_x_indices(obj['frameIndex'])
 		calobj.set_t_indices(obj['frameIndex'])
 		rmcal.add_object(calobj)
@@ -392,6 +432,8 @@ def fiducial_model(frames,objs,verbose=True,dosim=False,niter=1,**kwargs):
 	for iternum in range(niter):
 		pars = ubercal_solve(rmcal,**kwargs)
 		rmcal.update_params(pars)
+		if doflats:
+			rmcal.update_flatfields()
 		if dosim:
 			sim_finish(rmcal,simdat)
 		if iternum < niter-1:
@@ -400,5 +442,52 @@ def fiducial_model(frames,objs,verbose=True,dosim=False,niter=1,**kwargs):
 		return rmcal,simdat
 	return rmcal
 
-# rv = bokrmcal.fiducial_model(frames,objs,dosim=True,downsample=10,sim_userefmag=True,sim_userealerrors=True)
+
+def sim_make_residual_images(rmcal,binX=32,binY=32):
+	xBins = np.arange(0,nX+1,binX)
+	yBins = np.arange(0,nY+1,binY)
+	median_a_offset = 0
+	dmag = []
+	for i,obj in enumerate(rmcal):
+		mag,err = rmcal.get_object_phot(obj)
+		dmag.append(obj.refMag - (mag - median_a_offset))
+	dmag = np.concatenate(dmag)
+	xy = np.hstack( [ [rmcal.objs[i].xpos,rmcal.objs[i].ypos] 
+	                             for i in range(rmcal.num_objects()) ] )
+	# XXX hack that last index in a_indices is ccdNum
+	ccds = np.concatenate( [ rmcal.objs[i].a_indices[-1]
+	                             for i in range(rmcal.num_objects()) ] )
+	ffmaps = []
+	for ccdNum in range(4):
+		ffmap = [[[] for xi in xBins] for yi in yBins]
+		ii = np.where(ccds==ccdNum)[0]
+		for xi,yi,dm in zip(np.digitize(xy[0,ii],xBins),
+		                    np.digitize(xy[1,ii],yBins),
+		                    dmag[ii]):
+			ffmap[yi][xi].append(dm)
+		for xi in range(len(xBins)):
+			for yi in range(len(yBins)):
+				if len(ffmap[yi][xi])==0:
+					ffmap[yi][xi] = np.nan
+				else:
+					ffmap[yi][xi] = np.median(ffmap[yi][xi])
+		ffmaps.append(np.array(ffmap))
+	return np.array(ffmaps)
+
+def sim_show_residual_images(rmcal,**kwargs):
+	import matplotlib.pyplot as plt
+	cmap = plt.get_cmap('jet')
+	cmap.set_bad('gray',1.)
+	plt.figure(figsize=(14,12))
+	plt.subplots_adjust(0.04,0.04,0.99,0.99,0.1,0.1)
+	ffmaps = sim_make_residual_images(rmcal,**kwargs)
+	for ccdNum in range(1,5):
+		ffim = np.ma.array(ffmaps[ccdNum-1],mask=np.isnan(ffmaps[ccdNum-1]))
+		v1 = scoreatpercentile(ffim[~ffim.mask],10)
+		v2 = scoreatpercentile(ffim[~ffim.mask],90)
+		print ccdNum,ffim.mean(),ffim.std(),v1,v2
+		plt.subplot(2,2,ccdNum)
+		plt.imshow(ffim,vmin=v1,vmax=v2,
+		           origin='lower',extent=[0,nX,0,nY],interpolation='nearest')
+		plt.colorbar()
 
