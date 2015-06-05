@@ -11,7 +11,7 @@ import fitsio
 import matplotlib.pyplot as plt
 
 #from .ubercal import CalibrationObject,CalibrationObjectSet,ubercal_solve
-from ubercal import CalibrationObject,CalibrationObjectSet,ubercal_solve,init_spline_flatfields,init_array_flatfields
+from ubercal import CalibrationObject,CalibrationObjectSet,ubercal_solve,init_flatfields
 
 nX,nY = 4096,4032
 nX2 = nX//2
@@ -231,10 +231,14 @@ class SimFlatField(object):
 			self.flatfun = self._gradientfun
 	def _gradientfun(self,coeff,x,y):
 		norm = coeff.sum(axis=-1)
-		norm[norm==0] = 1
+		if np.isscalar(norm):
+			if norm>0:
+				norm **= -1
+		else:
+			norm[norm>0] **= -1
 		return ( (coeff[...,0]*(x/float(nX)) + 
 		          coeff[...,1]*(y/float(nY)))
-		         * self.dm / norm )
+		         * self.dm * norm )
 	def __call__(self,indices,x,y):
 		coeff = self.coeffs[indices]
 		return self.flatfun(coeff,x,y)
@@ -474,12 +478,14 @@ def sim_make_residual_images(rmcal,binX=32,binY=32):
 		ffmaps.append(np.array(ffmap))
 	return np.array(ffmaps)
 
-def sim_show_residual_images(rmcal,**kwargs):
-	import matplotlib.pyplot as plt
+def _init_fov_fig():
 	cmap = plt.get_cmap('jet')
 	cmap.set_bad('gray',1.)
 	plt.figure(figsize=(14,12))
 	plt.subplots_adjust(0.04,0.04,0.99,0.99,0.1,0.1)
+
+def sim_show_residual_images(rmcal,**kwargs):
+	_init_fov_fig()
 	ffmaps = sim_make_residual_images(rmcal,**kwargs)
 	for ccdNum in range(1,5):
 		ffim = np.ma.array(ffmaps[ccdNum-1],mask=np.isnan(ffmaps[ccdNum-1]))
@@ -489,5 +495,21 @@ def sim_show_residual_images(rmcal,**kwargs):
 		plt.subplot(2,2,ccdNum)
 		plt.imshow(ffim,vmin=v1,vmax=v2,
 		           origin='lower',extent=[0,nX,0,nY],interpolation='nearest')
+		plt.colorbar()
+
+def sim_show_fake_flatfields(simdat):
+	_init_fov_fig()
+	for i in range(4):
+		plt.subplot(2,2,i+1)
+		plt.imshow(simdat['flatfield'].make_image((0,i,)),
+		           origin='lower',extent=[0,nX,0,nY])
+		plt.colorbar()
+
+def show_fit_flatfields(rmcal):
+	_init_fov_fig()
+	for i,ff in enumerate(rmcal.flatfields):
+		plt.subplot(2,2,i+1)
+		plt.imshow(ff.make_image(res=64),
+		           origin='lower',extent=[0,nX,0,nY])
 		plt.colorbar()
 

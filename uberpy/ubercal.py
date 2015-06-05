@@ -13,8 +13,8 @@ class NullFlatField(object):
 		return
 	def fit(self,*args,**kwargs):
 		return
-	def __call__(self,*args):
-		return 0.0
+	def __call__(self,x,y):
+		return np.zeros_like(x)
 
 class SplineFlatField(object):
 	def __init__(self,nx,ny):
@@ -25,15 +25,17 @@ class SplineFlatField(object):
 		self.ty = [0,ny/2,ny]
 		self.kx = 3
 		self.ky = 3
+		self.splineFit = lambda x,y: np.zeros_like(x)
 	def fit(self,x,y,f,ivar=None):
 		self.splineFit = LSQBivariateSpline(x,y,f,self.tx,self.ty,w=ivar,
 		                                    kx=self.kx,ky=self.ky)
 	def __call__(self,x,y):
-		return np.array([self.splineFit(_x,_y) for _x,_y in zip(x,y)])
+		return np.array( [ self.splineFit(_x,_y).squeeze() 
+		                            for _x,_y in zip(x,y) ] )
 	def make_image(self,res=1):
 		x = np.arange(0,self.nx,res)
 		y = np.arange(0,self.ny,res)
-		return self.splineFit(x,y)
+		return self.splineFit(x,y).transpose()
 
 class FlatFieldSet(object):
 	def __init__(self,shape):
@@ -41,6 +43,14 @@ class FlatFieldSet(object):
 		self.flatfields = []
 	def get_shape(self):
 		return self.shape
+	def __call__(self,indices,x,y):
+		rv = []
+		ii = np.ravel_multi_index(indices,self.shape)
+		for i,flat in enumerate(self.flatfields):
+			jj = np.where(ii==i)[0]
+			if len(jj)>0:
+				rv.append(flat(x[jj],y[jj]))
+		return np.concatenate(rv)
 	def __iter__(self):
 		for ff in self.flatfields:
 			yield ff
@@ -160,7 +170,7 @@ class CalibrationObjectSet(object):
 		x = self.get_airmasses(xi)
 		dt = self.get_obstimes(ti)
 		dk_dt = self.get_terms('dkdt',0) # using a fixed value
-		flatfield = self.get_flatfields(fi,obj.get_xy())
+		flatfield = self.get_flatfields(fi,*obj.get_xy())
 		m_cal = m_inst + a - (k + dk_dt*dt)*x + flatfield
 		if returnBoth:
 			return m_cal,1/np.sqrt(ivar_inst),m_inst
@@ -181,8 +191,8 @@ class CalibrationObjectSet(object):
 		return self.tVals[t_indices]
 	def get_airmasses(self,x_indices):
 		return self.airmasses[x_indices]
-	def get_flatfields(self,flat_indices,xy):
-		return 0 #self.flatfields[flat_indices](*xy)
+	def get_flatfields(self,flat_indices,x,y):
+		return self.flatfields(flat_indices,x,y)
 	def update_params(self,par):
 		i0 = 0
 		for p in ['a','k','dkdt','flat']:
@@ -204,7 +214,10 @@ class CalibrationObjectSet(object):
 				# XXX should assume masking is correct here and be cleaner?
 				jj = np.where((ii==i) & (ivar>0) & ~mag.mask)[0]
 				if len(jj) > 0:
-					resv[i].append((x[jj],y[jj],mag[jj]-obj.refMag,ivar[jj]))
+					# XXX refmag should be optional, default is just offset
+					#     to weighted mean mag
+					dmag = obj.refMag - mag[jj]
+					resv[i].append((x[jj],y[jj],dmag,ivar[jj]))
 		for i,flat in enumerate(self.flatfields):
 			resarr = np.hstack(resv[i])
 			flat.fit(*resarr)
@@ -260,7 +273,7 @@ def ubercal_solve(calset,**kwargs):
 		x = calset.get_airmasses(x_indices)
 		dk_dt = calset.get_terms('dkdt',0) # using a fixed value
 		dt = calset.get_obstimes(t_indices)
-		flatfield = calset.get_flatfields(flat_indices,obj.get_xy())
+		flatfield = calset.get_flatfields(flat_indices,*obj.get_xy())
 		# construct indices into the parameter axis
 		nobs_i = obj.get_numobs()
 		par_a_indx = calset.parameter_indices('a',a_indices)
