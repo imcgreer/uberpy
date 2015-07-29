@@ -9,6 +9,7 @@ from astropy.time import Time,TimeDelta
 import fitsio
 
 import matplotlib.pyplot as plt
+from matplotlib import ticker
 
 #from .ubercal import CalibrationObject,CalibrationObjectSet,ubercal_solve
 from ubercal import CalibrationObject,CalibrationObjectSet,ubercal_solve,init_flatfields
@@ -170,7 +171,7 @@ def collect_observations(filt,catpfx='sdssbright'):
 			expTime = frameList['expTime'][jj]
 			counts = data['aperCounts'][good,aperNum]
 			mags = mag0 - 2.5*np.log10(counts/expTime)
-			errs = 1.0856*data['aperCountsErr'][good,aperNum]/counts
+			errs = (2.5/np.log(10))*data['aperCountsErr'][good,aperNum]/counts
 			ccdNums = data['ccdNum'][good] 
 			ampNums = (data['x'][good]//nX2).astype(np.int) + \
 			          2*(data['y'][good]//nY2).astype(np.int)
@@ -271,6 +272,9 @@ def sim_init(a_init,k_init,objs,**kwargs):
 	else:
 		simdat['err'] = np.repeat(fixed_err,len(objs))
 		print 'SIMULATION: using fixed errors %.2f' % fixed_err
+	simdat['outlier_frac'] = kwargs.get('sim_outlierfrac',0.1)
+	print 'SIMULATION: fraction of outliers %g' % simdat['outlier_frac']
+	simdat['is_outlier'] = []
 	if kwargs.get('sim_addflatfield',True):
 		dm = kwargs.get('sim_flatfield_range',0.3)
 		simdat['flatfield'] = SimFlatField(n=1,kind='gradient',dm=dm)
@@ -293,6 +297,14 @@ def sim_initobject(i,obj,frames,simdat,rmcal):
 	           + flatfield(flatIndex,obj['x'],obj['y']) )
 	errs = np.repeat(simdat['err'][i],len(mags))
 	mags[:] += errs*np.random.normal(size=mags.shape)
+	if simdat['outlier_frac'] > 0:
+		is_outlier = np.random.poisson(simdat['outlier_frac'],len(mags))
+		ii = np.where(is_outlier)[0]
+		# start at 5sigma and decline as a power law with index 1.5
+		nsig_outlier = (np.random.pareto(1.5,len(ii)) + 1) * 5.0
+		sgn = np.choose(np.random.rand(len(ii)) > 0.5,[-1,1])
+		mags[ii] += sgn*nsig_outlier*errs[ii]
+		simdat['is_outlier'].append(is_outlier)
 	return CalibrationObject(mags,errs,errMin=simdat['errMin'])
 
 def sim_finish(rmcal,simdat):
@@ -302,24 +314,32 @@ def sim_finish(rmcal,simdat):
 	da = (rmcal.params['a']['terms']-simdat['a_true'])[ga].flatten()
 	median_a_offset = np.median(da)
 	#
-	plt.figure(figsize=(12,6))
-	plt.subplots_adjust(0.03,0.03,0.99,0.99)
-	plt.subplot2grid((2,4),(0,0),colspan=3)
+	plt.figure(figsize=(9,4))
+	plt.subplots_adjust(0.08,0.06,0.98,0.98,0.23,0.15)
+	ax1 = plt.subplot2grid((2,4),(0,0),colspan=3)
 	plt.axhline(0,c='gray')
 	plt.plot(dk)
 	plt.xlim(0,len(gk[0]))
 	plt.ylim(-0.5,0.5)
+	plt.ylabel(r'$\Delta(k)$',size=12)
 	#
-	plt.subplot2grid((2,4),(1,0),colspan=3)
+	ax2 = plt.subplot2grid((2,4),(1,0),colspan=3)
 	plt.axhline(0,c='gray')
 	plt.plot(da-median_a_offset)
 	plt.xlim(0,len(ga[0]))
 	plt.ylim(-0.8,0.8)
+	plt.ylabel(r'$\Delta(a)$',size=12)
 	#
 	dm = []
 	for i,obj in enumerate(rmcal):
 		mag,err = rmcal.get_object_phot(obj)
 		dm.append(obj.refMag - (mag - median_a_offset))
+		try:
+			is_outlier = simdat['is_outlier'][i].astype(np.bool)
+			is_masked = obj.mags.mask
+#		print '%4d %4d %4d %4d %4d' % (len(mag),np.sum(is_outlier),np.sum(is_outlier&is_masked),np.sum(is_outlier&~is_masked),np.sum(~is_outlier&is_masked))
+		except:
+			pass
 	dm = np.ma.concatenate(dm)
 	dm3 = sigma_clip(dm,sig=3,iters=1)
 	frac_sig3 = np.sum(dm3.mask & ~dm.mask) / float(np.sum(~dm.mask))
@@ -335,8 +355,20 @@ def sim_finish(rmcal,simdat):
 	print '%8.2f %8.2f %8.2f %8.2f %8.2f' % \
 	       (mm*dm.mean(),mm*dm.std(),mm*dm3.std(),100*frac_sig3,0.0)
 	#
-	plt.subplot2grid((2,4),(0,3),rowspan=2)
-	plt.hist(dm,50,(-0.2,0.2))
+	ax3 = plt.subplot2grid((2,4),(0,3),rowspan=2)
+	plt.hist(dm.data,50,(-0.2,0.2),edgecolor='none',color='r',normed=True)
+	plt.hist(dm.data[~dm.mask],50,(-0.2,0.2),edgecolor='none',
+	         color='b',normed=True)
+	ax3.text(0.95,0.98,r'$\Delta(mag)$',size=12,ha='right',va='top',
+	         transform=ax3.transAxes)
+	ax3.axvline(dm.mean(),c='purple')
+	ax3.axvline(dm.mean()-dm3.std(),c='purple',ls='--')
+	ax3.axvline(dm.mean()+dm3.std(),c='purple',ls='--')
+	plt.xlim(-0.2,0.2)
+	ax3.xaxis.set_major_locator(ticker.MultipleLocator(0.1))
+	for ax in [ax1,ax2,ax3]:
+		for tick in ax.xaxis.get_major_ticks()+ax.yaxis.get_major_ticks():
+			tick.label1.set_fontsize(9)
 
 def cal_finish(rmcal):
 	dm = []
@@ -360,12 +392,16 @@ def cal_finish(rmcal):
 	plt.figure()
 	plt.hist(dm,50,(-1,1))
 
-def reject_outliers(rmcal):
+#def reject_outliers(rmcal,**kwargs):
+def reject_outliers(rmcal,simdat,**kwargs):
+	sig = kwargs.get('reject_sig',3.0)
+	iters = kwargs.get('reject_niter',2)
 	for i,obj in enumerate(rmcal):
 		mags,errs = rmcal.get_object_phot(obj)
-		clipped = sigma_clip(mags)
-		if clipped.mask.sum() > mags.mask.sum():
-			print 'object %d rejected %d' % (i,(clipped.mask&~mags.mask).sum())
+		clipped = sigma_clip(mags,sig=sig,iters=iters)
+# need a verbose argument
+#		if clipped.mask.sum() > mags.mask.sum():
+#			print 'object %d rejected %d' % (i,(clipped.mask&~mags.mask).sum())
 		obj.update_mask(clipped.mask)
 
 def fiducial_model(frames,objs,verbose=True,dosim=False,niter=1,**kwargs):
@@ -441,7 +477,8 @@ def fiducial_model(frames,objs,verbose=True,dosim=False,niter=1,**kwargs):
 		if dosim:
 			sim_finish(rmcal,simdat)
 		if iternum < niter-1:
-			reject_outliers(rmcal)
+			#reject_outliers(rmcal,**kwargs)
+			reject_outliers(rmcal,simdat,**kwargs) # XXX
 	if dosim:
 		return rmcal,simdat
 	return rmcal
@@ -481,7 +518,7 @@ def sim_make_residual_images(rmcal,binX=32,binY=32):
 def _init_fov_fig():
 	cmap = plt.get_cmap('jet')
 	cmap.set_bad('gray',1.)
-	plt.figure(figsize=(14,12))
+	plt.figure(figsize=(10,9))
 	plt.subplots_adjust(0.04,0.04,0.99,0.99,0.1,0.1)
 
 def sim_show_residual_images(rmcal,**kwargs):
